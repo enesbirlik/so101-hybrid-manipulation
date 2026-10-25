@@ -4,6 +4,8 @@ URDF/xacro description of the SO-101 follower arm with an optional wrist camera,
 
 The model is derived from [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) (`Simulation/SO101/so101_new_calib.urdf`, Apache-2.0). See [ATTRIBUTION.md](ATTRIBUTION.md) for the exact source commit and the list of modifications.
 
+> 🚧 **Status: in progress.** The package build files, vendored URDF/meshes, xacro, launch, and RViz config are being added. Until then, the usage and file list below describe the target layout.
+
 ## Usage
 
 ```bash

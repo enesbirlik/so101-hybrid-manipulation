@@ -2,7 +2,9 @@
 
 **Let classical kinematics and MoveIt 2 solve the easy part fast, let a learned policy (VLA) handle the precise part, and let a Behavior Tree orchestrate the two.**
 
+<!-- TODO: enable once .github/workflows/ci.yml exists:
 [![CI](https://github.com/enesbirlik/so101-hybrid-manipulation/actions/workflows/ci.yml/badge.svg)](https://github.com/enesbirlik/so101-hybrid-manipulation/actions/workflows/ci.yml)
+-->
 ![ROS 2 Jazzy](https://img.shields.io/badge/ROS%202-Jazzy-22314E)
 ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-E95420)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
