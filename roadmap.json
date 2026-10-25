@@ -1,0 +1,62 @@
+{
+  "updated": "2026-10-25",
+  "steps": [
+    {
+      "id": "parts-bom-print",
+      "title": {
+        "tr": "Parçalar, BOM & 3D baskılar",
+        "en": "Parts, BOM & 3D prints"
+      },
+      "status": "done"
+    },
+    {
+      "id": "assembly-motor-test",
+      "title": {
+        "tr": "Montaj & ilk motor testi",
+        "en": "Assembly & first motor test"
+      },
+      "status": "done",
+      "date": "2026-10-25"
+    },
+    {
+      "id": "calibration-urdf-camera",
+      "title": {
+        "tr": "Kalibrasyon, URDF eşleştirme, fisheye kamera kalibrasyonu",
+        "en": "Calibration, URDF matching, fisheye camera calibration"
+      },
+      "status": "todo"
+    },
+    {
+      "id": "ros2-control-moveit",
+      "title": {
+        "tr": "C++ ros2_control arayüzü + MoveIt 2",
+        "en": "C++ ros2_control interface + MoveIt 2"
+      },
+      "status": "todo"
+    },
+    {
+      "id": "perception-pick-place",
+      "title": {
+        "tr": "Algı: ArUco + obje tespiti → klasik pick & place",
+        "en": "Perception: ArUco + object detection → classical pick & place"
+      },
+      "status": "todo"
+    },
+    {
+      "id": "bt-demos-vla",
+      "title": {
+        "tr": "Behavior Tree + gösterim verisi + VLA politikası",
+        "en": "Behavior Tree + demonstration data + VLA policy"
+      },
+      "status": "todo"
+    },
+    {
+      "id": "hybrid-benchmark",
+      "title": {
+        "tr": "Hibrit orkestrasyon & benchmark",
+        "en": "Hybrid orchestration & benchmark"
+      },
+      "status": "todo"
+    }
+  ]
+}

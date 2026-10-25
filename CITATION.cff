@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+title: "so101-hybrid-manipulation: Classical-to-learned handover on the SO-101 arm"
+abstract: >-
+  An open build log and research project on a low-cost SO-101 robot arm.
+  Classical kinematics and MoveIt 2 handle the coarse part of a manipulation
+  task, a learned vision-language-action (VLA) policy handles the precise part,
+  and a Behavior Tree orchestrates the handover between them.
+type: software
+authors:
+  - family-names: Birlik
+    given-names: Enes
+license: Apache-2.0
+repository-code: "https://github.com/enesbirlik/so101-hybrid-manipulation"
+date-released: "2026-10-25"
+keywords:
+  - robotics
+  - ros2
+  - moveit2
+  - behavior-trees
+  - imitation-learning
+  - vla
+  - so-101
