@@ -1,0 +1,53 @@
+# --- ROS 2 / colcon ---
+build/
+install/
+log/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- Recordings (rosbag2) ---
+*.db3
+*.db3-shm
+*.db3-wal
+*.mcap
+rosbag2_*/
+bags/
+
+# --- Datasets & model checkpoints ---
+datasets/
+data/
+checkpoints/
+outputs/
+wandb/
+*.ckpt
+*.pt
+*.pth
+*.safetensors
+*.onnx
+
+# --- Videos (link them from the README instead, see docs/media/README.md) ---
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# --- Claude Code local settings ---
+.claude/settings.local.json

@@ -1,0 +1,10 @@
+so101-hybrid-manipulation
+Copyright 2026 Enes Birlik
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes robot description files (URDF and STL meshes) derived
+from SO-ARM100 by TheRobotStudio and contributors
+(https://github.com/TheRobotStudio/SO-ARM100), licensed under the
+Apache License, Version 2.0. Modifications are listed in
+so101_description/ATTRIBUTION.md.
