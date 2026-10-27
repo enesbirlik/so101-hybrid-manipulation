@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-25",
+  "updated": "2026-10-27",
   "steps": [
     {
       "id": "parts-bom-print",
@@ -24,7 +24,7 @@
         "tr": "Kalibrasyon, URDF eşleştirme, fisheye kamera kalibrasyonu",
         "en": "Calibration, URDF matching, fisheye camera calibration"
       },
-      "status": "todo"
+      "status": "active"
     },
     {
       "id": "ros2-control-moveit",
