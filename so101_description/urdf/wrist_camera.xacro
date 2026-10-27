@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<!-- Wrist camera mount + camera, extracted from TheRobotStudio/SO-ARM100 @ a758567,
+     Simulation/SO101/so101_new_calib_camera.urdf (Apache-2.0). Modification: wrapped in a
+     xacro macro, mesh paths changed to package://. See ../ATTRIBUTION.md. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="so101_wrist_camera" params="parent:=gripper_link">
+
+    <!-- Link wrist_camera_mount -->
+    <link name="wrist_camera_mount_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.02"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+      </inertial>
+      <!-- Part wrist_camera_mount_so101_v1 (Hex-Nut Recess, 32x32 UVC module form factor) -->
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://so101_description/meshes/wrist_camera_mount_so101_v1.stl" scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="3d_printed"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://so101_description/meshes/wrist_camera_mount_so101_v1.stl" scale="0.001 0.001 0.001"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <!-- Link wrist_camera -->
+    <link name="wrist_camera_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.015"/>
+        <inertia ixx="1e-5" ixy="0" ixz="0" iyy="1e-5" iyz="0" izz="1e-5"/>
+      </inertial>
+      <!-- Part wrist_camera_so101_v1 -->
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://so101_description/meshes/wrist_camera_so101_v1.stl"/>
+        </geometry>
+        <material name="sts3215"/>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh filename="package://so101_description/meshes/wrist_camera_so101_v1.stl"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <!-- Joint from gripper to wrist_camera_mount -->
+    <joint name="wrist_camera_mount_joint" type="fixed">
+      <origin xyz="-0.0150 0.0240 -0.0315" rpy="-1.5708 -0.0008 -1.5708"/>
+      <parent link="${parent}"/>
+      <child link="wrist_camera_mount_link"/>
+    </joint>
+
+    <!-- Joint from wrist_camera_mount to wrist_camera -->
+    <joint name="wrist_camera_joint" type="fixed">
+      <origin xyz="-0.04941 -0.03813 0.0175" rpy="0 -1.5708 -2.0076"/>
+      <parent link="wrist_camera_mount_link"/>
+      <child link="wrist_camera_link"/>
+    </joint>
+
+  </xacro:macro>
+</robot>

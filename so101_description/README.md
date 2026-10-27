@@ -4,7 +4,12 @@ URDF/xacro description of the SO-101 follower arm with an optional wrist camera,
 
 The model is derived from [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) (`Simulation/SO101/so101_new_calib.urdf`, Apache-2.0). See [ATTRIBUTION.md](ATTRIBUTION.md) for the exact source commit and the list of modifications.
 
-> 🚧 **Status: in progress.** The package build files, vendored URDF/meshes, xacro, launch, and RViz config are being added. Until then, the usage and file list below describe the target layout.
+Live view of the real arm (calibrated, see [`tools/`](../tools/README.md)):
+
+```bash
+ros2 launch so101_description display.launch.py gui:=false
+python3 tools/so101_joint_states.py      # publishes /joint_states from the servos
+```
 
 ## Usage
 
@@ -64,6 +69,6 @@ The model has **not yet been matched to the physical arm**. Until every item bel
 - [ ] **Ticks ↔ radians:** confirm 4096 ticks = 2π for every ST3215 and note the sign per joint.
 - [ ] **Limits:** the real mechanical range of each joint fits inside the URDF limits (watch for cable and printed-part collisions).
 - [ ] **Gripper mapping:** relation between gripper joint angle and LeRobot's 0 (closed) … 100 (open) linear range.
-- [ ] **Camera pose:** `wrist_camera_link` position and orientation match the real mount; the upstream camera mesh has no `scale` attribute, so check its size visually.
+- [ ] **Camera pose:** `wrist_camera_link` position and orientation match the real mount. (The camera mesh has no `scale` attribute, but it is already in metres: 32 × 32 × 33 mm.)
 - [ ] **Camera frame:** add a `wrist_camera_optical_frame` (REP 103 optical convention) once fisheye intrinsics for the 135° lens are calibrated (phase 3).
 - [ ] **Effort/velocity:** replace the placeholder limits with values derived from the ST3215 datasheet and measurements.
