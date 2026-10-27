@@ -71,7 +71,11 @@ class FeetechBus:
     def __init__(self, port, baudrate=1_000_000, timeout=0.05):
         # exclusive=True takes a flock: a second tool (or the ros2_control
         # interface) cannot open the bus at the same time.
-        self.ser = serial.Serial(port, baudrate, timeout=0.002, exclusive=True)
+        try:
+            self.ser = serial.Serial(port, baudrate, timeout=0.002, exclusive=True)
+        except serial.SerialException as e:
+            busy = "lock" in str(e)
+            raise FeetechError(f"{port} is in use by another tool (joint_states, teleop, ...)" if busy else str(e))
         self.port = port
         self.timeout = timeout
         self.last_error = {}  # servo id -> error byte of its last status packet
@@ -87,12 +91,17 @@ class FeetechBus:
 
     # --- packet level -----------------------------------------------------
 
-    def _transact(self, servo_id, instr, params=b""):
+    def _transact(self, servo_id, instr, params=b"", attempts=2):
         body = bytes([servo_id, len(params) + 2, instr]) + bytes(params)
         packet = b"\xff\xff" + body + bytes([~sum(body) & 0xFF])
-        self.ser.reset_input_buffer()
-        self.ser.write(packet)
-        return self._read_status(servo_id, packet)
+        for attempt in range(attempts):
+            self.ser.reset_input_buffer()
+            self.ser.write(packet)
+            try:
+                return self._read_status(servo_id, packet)
+            except FeetechError:
+                if attempt == attempts - 1:  # one corrupted reply on a noisy bus is not fatal
+                    raise
 
     def _read_status(self, servo_id, sent):
         buf = bytearray()
