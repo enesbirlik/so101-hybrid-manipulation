@@ -43,11 +43,14 @@ LIMIT_MARGIN_DEG = 2.0   # servo position limits sit this far inside the measure
 LOOP_HZ = 50
 STALL_WINDOW = 0.5       # s; a joint that gets no closer to its goal within this is stuck
 
-# zero command: the joint with the longest way to go moves at MOVE_SPEED, the
-# others slower so that all of them arrive together.
+# Moves (zero, teleop): the joint with the longest way to go moves at MOVE_SPEED,
+# the others slower so that all of them arrive together.
 MOVE_SPEED = 200         # step/s, about 18 deg/s
 MOVE_ACC = 10            # 100 step/s^2
-MOVE_TORQUE = 70         # % of max torque
+MOVE_TORQUE = 100        # % of max torque; 70 % could not hold the arm horizontal
+# Going to zero from the folded rest pose: lift the upper arm first, then unfold the
+# elbow, then the rest. Moving all at once pushed the forearm into the table.
+ZERO_STAGES = [{"shoulder_lift"}, {"elbow_flex"}, {"shoulder_pan", "wrist_flex", "wrist_roll", "gripper"}]
 
 
 @dataclass
@@ -56,16 +59,18 @@ class Joint:
     name: str
     urdf_lower: float     # deg, so101_new_calib.urdf
     urdf_upper: float     # deg
-    zero_from_lower: bool = False  # no visible zero pose: the lower hard stop is urdf_lower
+    zero_from: str = ""   # "lower"/"upper": that hard stop sets the zero, the Enter pose is ignored
+    stop_deg: float = None  # angle of that hard stop (default: the URDF limit)
 
 
 JOINTS = [
     Joint(1, "shoulder_pan", -110.0, 110.0),
     Joint(2, "shoulder_lift", -100.0, 100.0),
-    Joint(3, "elbow_flex", -96.8, 96.8),
+    # Folded onto the upper arm. The URDF limit (+96.8) is 5 deg wider than where its meshes touch.
+    Joint(3, "elbow_flex", -96.8, 96.8, zero_from="upper", stop_deg=91.8),
     Joint(4, "wrist_flex", -95.0, 95.0),
     Joint(5, "wrist_roll", -157.2, 162.8),
-    Joint(6, "gripper", -10.0, 100.0, zero_from_lower=True),  # closed = -10 deg
+    Joint(6, "gripper", -10.0, 100.0, zero_from="lower"),  # closed = -10 deg
 ]
 
 
@@ -142,7 +147,8 @@ def save_calibration(path, cal, port):
         "# (the offset is stored in each servo's EEPROM, address 31).",
         "#   joint_rad = direction * (ticks - zero) * 2*pi / 4096",
         "# zero is the pose held at Enter during calibration (the URDF zero pose);",
-        "# for the gripper it is derived from the closed hard stop (= URDF lower limit).",
+        "# for elbow_flex and the gripper it comes from a hard stop (folded = +91.8 deg,",
+        "# closed = -10 deg).",
         "# direction is not measured: verify it against RViz before trusting it.",
         "joints:",
     ]
@@ -277,8 +283,9 @@ def cmd_calibrate(args):
 
 def track_joint(bus, j, locked):
     """Track one joint across the encoder wrap until Enter; the Enter pose is its zero."""
-    if j.zero_from_lower:
-        print(f"  Move it by hand to BOTH ends and press Enter (the closed end becomes {j.urdf_lower:+.1f}°).")
+    if j.zero_from:
+        limit = stop_angle(j)
+        print(f"  Move it by hand to BOTH ends and press Enter (the {j.zero_from} hard stop becomes {limit:+.1f}°).")
     else:
         print("  Move it by hand to BOTH ends, then hold it at its zero and press Enter.")
     t = Tracker(bus.read_position(j.id))
@@ -302,22 +309,36 @@ def track_joint(bus, j, locked):
     return t
 
 
+def stop_angle(j):
+    if j.stop_deg is not None:
+        return j.stop_deg
+    return j.urdf_lower if j.zero_from == "lower" else j.urdf_upper
+
+
 def plan_joint(bus, j, t):
-    """Homing offset that makes the Enter pose read ~2048, and the range around it."""
+    """Homing offset and range. The offset makes the Enter pose read ~2048 (the middle of
+    the range for joints whose zero comes from a hard stop), keeping both ends off the wrap."""
+    urdf_span = (j.urdf_upper - j.urdf_lower) * TICKS_PER_DEG
+    if t.hi - t.lo < 0.3 * urdf_span:
+        print(f"  ! range only {deg(t.hi - t.lo):.1f}°: move it to both ends first")
+        return None
+    ref = (t.lo + t.hi) // 2 if j.zero_from else t.u
     old_offset = bus.read_homing_offset(j.id)
     # present = (raw - offset) mod 4096, so lowering the offset by s raises every reading by s.
-    offset = max(wrap(old_offset + t.u - HALF_TURN), -2047)  # 11-bit magnitude
+    offset = max(wrap(old_offset + ref - HALF_TURN), -2047)  # 11-bit magnitude
     shift = old_offset - offset
-    zero = (t.u + shift) % fb.TICKS_PER_TURN
-    lo, hi = zero + (t.lo - t.u), zero + (t.hi - t.u)
-    if j.zero_from_lower:
-        zero = lo - round(j.urdf_lower * TICKS_PER_DEG)
+    zero = (ref + shift) % fb.TICKS_PER_TURN
+    lo, hi = zero + (t.lo - ref), zero + (t.hi - ref)
+    if j.zero_from == "lower":
+        zero = lo - round(stop_angle(j) * TICKS_PER_DEG)
+    elif j.zero_from == "upper":
+        zero = hi - round(stop_angle(j) * TICKS_PER_DEG)
     print(f"  zero here, range {deg(lo - zero):+.1f}° .. {deg(hi - zero):+.1f}° "
           f"(URDF {j.urdf_lower:+.1f}° .. {j.urdf_upper:+.1f}°)")
     if lo < 0 or hi >= fb.TICKS_PER_TURN:
         print("  ! an end is more than 180° from this zero (encoder wrap): pick a zero nearer the middle")
         return None
-    if hi - lo < 0.8 * (j.urdf_upper - j.urdf_lower) * TICKS_PER_DEG:
+    if hi - lo < 0.8 * urdf_span:
         print("  ! much less than the URDF range: moved to both ends?")
     return offset, shift, zero, lo, hi
 
@@ -376,6 +397,67 @@ def cmd_check(args):
     return 0 if ok else 1
 
 
+def hold_all(bus, joints):
+    """Torque on every joint where it is now, with the slow move profile and full torque."""
+    for j in joints:
+        bus.write_u8(j.id, fb.ACCELERATION, MOVE_ACC)
+        bus.write_u16(j.id, fb.GOAL_SPEED, MOVE_SPEED)
+        bus.torque(j.id, True)
+        bus.write_u16(j.id, fb.TORQUE_LIMIT, MOVE_TORQUE * 10)
+
+
+def move_joints(bus, cal, joints, target):
+    """Move `joints` to `target` ticks, arriving together. Freezes all of them if one gets stuck.
+
+    Returns the names of the stuck joints ([] when every joint arrived, ["timeout"] on timeout).
+    """
+    start = {j.name: bus.read_position(j.id) for j in joints}
+    longest = max(abs(start[j.name] - target[j.name]) for j in joints) or 1
+    for j in joints:
+        speed = max(20, round(MOVE_SPEED * abs(start[j.name] - target[j.name]) / longest))
+        bus.write_u16(j.id, fb.GOAL_SPEED, speed)
+        bus.write_u16(j.id, fb.GOAL_POSITION, target[j.name])
+
+    view = LiveView()
+    t0 = time.monotonic()
+    t_end = t0 + longest / MOVE_SPEED + 4.0
+    history = []  # (time, positions), last STALL_WINDOW seconds
+    stuck = []
+    while True:
+        now = time.monotonic()
+        pos = {j.name: bus.read_position(j.id) for j in joints}
+        history = [h for h in history if now - h[0] <= STALL_WINDOW] + [(now, pos)]
+        view.show([f"  {j.name:<14}{to_deg(pos[j.name], cal[j.name]):+7.1f} deg" for j in joints])
+        if all(abs(pos[n] - target[n]) <= 25 for n in pos):
+            break
+        if now - t0 > 1.0 and now - history[0][0] >= STALL_WINDOW * 0.9:
+            # far from the goal and no longer getting closer: blocked or overpowered
+            stuck = [n for n in pos if abs(pos[n] - target[n]) > 25
+                     and abs(history[0][1][n] - target[n]) - abs(pos[n] - target[n]) < 5]
+        if stuck or now > t_end:
+            stuck = stuck or ["timeout"]
+            break
+        time.sleep(1 / LOOP_HZ)
+    for j in joints:  # restore the normal speed; freeze in place if we did not arrive
+        bus.write_u16(j.id, fb.GOAL_SPEED, MOVE_SPEED)
+        if stuck:
+            bus.write_u16(j.id, fb.GOAL_POSITION, bus.read_position(j.id))
+    return stuck
+
+
+def go_to_zero(bus, cal, joints):
+    """Stage by stage so the folded arm unfolds without pushing itself into the table."""
+    for stage in ZERO_STAGES:
+        group = [j for j in joints if j.name in stage]
+        if not group:
+            continue
+        print(f"  -> {', '.join(j.name for j in group)}")
+        stuck = move_joints(bus, cal, group, {j.name: cal[j.name]["zero"] for j in group})
+        if stuck:
+            return stuck
+    return []
+
+
 def cmd_zero(args):
     cal = load_calibration(args.file)
     joints = [j for j in JOINTS if j.name in cal]
@@ -383,51 +465,20 @@ def cmd_zero(args):
         raise Abort(f"no calibration in {args.file}")
     with open_bus(args) as bus:
         require_servos(bus, joints)
-        target = {j.name: cal[j.name]["zero"] for j in joints}
-        start = {j.name: bus.read_position(j.id) for j in joints}
-        longest = max(abs(start[j.name] - target[j.name]) for j in joints) or 1
         try:
-            for j in joints:
-                speed = max(20, round(MOVE_SPEED * abs(start[j.name] - target[j.name]) / longest))
-                bus.write_u8(j.id, fb.ACCELERATION, MOVE_ACC)
-                bus.write_u16(j.id, fb.GOAL_SPEED, speed)
-                bus.torque(j.id, True)
-                bus.write_u16(j.id, fb.TORQUE_LIMIT, MOVE_TORQUE * 10)
-            for j in joints:
-                bus.write_u16(j.id, fb.GOAL_POSITION, target[j.name])
-
-            view = LiveView()
-            t0 = time.monotonic()
-            t_end = t0 + longest / MOVE_SPEED + 4.0
-            history = []  # (time, positions), last STALL_WINDOW seconds
-            stuck = []
-            while True:
-                now = time.monotonic()
-                pos = {j.name: bus.read_position(j.id) for j in joints}
-                history = [h for h in history if now - h[0] <= STALL_WINDOW] + [(now, pos)]
-                view.show([f"  {j.name:<14}{to_deg(pos[j.name], cal[j.name]):+7.1f} deg" for j in joints])
-                done = all(abs(pos[n] - target[n]) <= 25 for n in pos)
-                if now - t0 > 1.0 and now - history[0][0] >= STALL_WINDOW * 0.9:
-                    # far from the goal and no longer getting closer: blocked or overpowered
-                    stuck = [n for n in pos if abs(pos[n] - target[n]) > 25
-                             and abs(history[0][1][n] - target[n]) - abs(pos[n] - target[n]) < 5]
-                if done or stuck or now > t_end:
-                    break
-                time.sleep(1 / LOOP_HZ)
-            if not done:
-                for j in joints:  # freeze where we are instead of pushing on
-                    bus.write_u16(j.id, fb.GOAL_POSITION, bus.read_position(j.id))
+            hold_all(bus, joints)
+            stuck = go_to_zero(bus, cal, joints)
         except KeyboardInterrupt:
             for j in joints:
                 bus.write_u8(j.id, fb.TORQUE_ENABLE, 0)
             print("\ninterrupted, torque off.")
             return 1
-    if done:
-        print("at zero, holding.")
+    if stuck:
+        print(f"stopped, not moving towards zero: {', '.join(stuck)}. Frozen in place, holding.")
     else:
-        print(f"stopped, not moving towards zero: {', '.join(stuck) or 'timeout'}. Frozen in place, holding.")
+        print("at zero, holding.")
     print("release: python3 tools/so101_calibrate.py off  (support the arm first)")
-    return 0 if done else 1
+    return 1 if stuck else 0
 
 
 def cmd_off(args):

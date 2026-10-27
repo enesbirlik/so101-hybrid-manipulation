@@ -51,6 +51,14 @@ ros2 launch so101_description display.launch.py gui:=false
 python3 tools/so101_joint_states.py [--torque-off]
 ```
 
+## `so101_teleop.py`
+
+Keyboard joint teleop, no ROS or MoveIt. `q/a w/s e/d r/f t/g y/h` jog the six joints, `z` goes to zero (shoulder_lift first, then elbow_flex, then the rest, so the folded arm does not push itself into the table), `space` stops, `+/-` change the step, `x` quits. Goals stay inside the calibrated range and never run more than 8° ahead of the joint. A watchdog freezes the arm and prints torque enable, load, current, voltage, temperature and status when a joint falls 15° behind its goal for 0.5 s.
+
+```bash
+python3 tools/so101_teleop.py
+```
+
 Planned:
 
 - **Servo bring-up tool:** assign IDs one motor at a time and run small safe test moves.
