@@ -1,0 +1,24 @@
+# so101_camera_calib.py, 2026-10-28 20:33
+# RMS 0.714 px, 40 frames, ChArUco 7x5 square 24.0 mm
+image_width: 1280
+image_height: 720
+camera_name: so101_wrist
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [734.3877276458139, 0.0, 642.5966282879098, 0.0, 736.6585684616559, 323.383912504321,
+    0.0, 0.0, 1.0]
+distortion_model: equidistant
+distortion_coefficients:
+  rows: 1
+  cols: 4
+  data: [-0.09828164778641296, 0.014014841084510316, -0.012666988041468956, 0.003943180810727052]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [734.3877276458139, 0.0, 642.5966282879098, 0.0, 0.0, 736.6585684616559, 323.383912504321,
+    0.0, 0.0, 0.0, 1.0, 0.0]

@@ -62,3 +62,15 @@ python3 tools/so101_teleop.py
 Planned:
 
 - **Servo bring-up tool:** assign IDs one motor at a time and run small safe test moves.
+
+## `so101_camera_calib.py`
+
+Fisheye (equidistant) intrinsic calibration of the 135° wrist camera, 1280x720 MJPG (the 16:9 modes show the whole sensor centred; every 4:3 mode is an off-centre crop of it), camera mounted upside down so frames are rotated 180° as read, with the printed calibrx.io 7x5 ChArUco board (DICT_6X6_250). The print came out at 96 % (50 mm bar = 48 mm), so the squares are 24 mm: pass `--square-mm` if you reprint.
+
+```bash
+python3 tools/so101_camera_calib.py capture     # SPACE saves a frame (>= 8 of 24 corners), q quits
+python3 tools/so101_camera_calib.py calibrate   # cv2.fisheye, drops outlier frames, writes the YAML
+python3 tools/so101_camera_calib.py view [--balance 0.5]   # raw | undistorted live check
+```
+
+Frames go to `~/so101_data/wrist_calib_1280x720/`. The result goes to [`so101_perception/config/wrist_camera_fisheye.yaml`](../so101_perception/config/wrist_camera_fisheye.yaml) in ROS `camera_info` format (`distortion_model: equidistant`, k1..k4).
