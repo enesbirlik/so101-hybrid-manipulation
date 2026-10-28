@@ -74,3 +74,21 @@ python3 tools/so101_camera_calib.py view [--balance 0.5]   # raw | undistorted l
 ```
 
 Frames go to `~/so101_data/wrist_calib_1280x720/`. The result goes to [`so101_perception/config/wrist_camera_fisheye.yaml`](../so101_perception/config/wrist_camera_fisheye.yaml) in ROS `camera_info` format (`distortion_model: equidistant`, k1..k4).
+
+## `so101_hand_eye.py`
+
+Eye-in-hand calibration: the wrist camera pose relative to `gripper_link`. The ChArUco board lies fixed on the table. The arm is moved by hand, torque off. At each pose the tool reads the joint ticks, computes the gripper pose with forward kinematics straight from `so101_new_calib.urdf` (no ROS needed), and finds the board pose from the fisheye-undistorted corners.
+
+```bash
+python3 tools/so101_hand_eye.py capture [--torque-off]   # by hand, torque off: SPACE saves when the arm is still
+python3 tools/so101_hand_eye.py auto [--poses 20]        # torque on: set a centre pose, the arm visits poses around it
+python3 tools/so101_hand_eye.py solve [--refine-joints]  # all five cv2.calibrateHandEye methods, keeps the most consistent
+```
+
+Prefer `auto`. With torque off, gravity and the hand move the joints inside their play. On the first try the board spread was 15 mm / 3.4° by hand and 3.1 mm / 1.2° with `auto`. `auto` needs one rough `capture` + `solve` result to keep the board in view. Its poses stay inside the calibrated ranges, at least 5 cm above the table, and outside the jerk zones predicted in the day-1 devlog. Each pose is reached from both sides, and `solve` reports how far apart the servos stop (about 2°, which the encoders measure) and how much the camera sees beyond that (about 0.2°).
+
+`--refine-joints` fits the camera pose and the zero offsets of `shoulder_lift`, `elbow_flex` and `wrist_flex` together, on the corner reprojection error. The board is pinned to the table plane the arm stands on (z = 0, horizontal, only x, y and yaw free). With a free board pose, a shoulder error is absorbed by tilting the board. The fit is also checked on held-out poses and per run (centre pose). It only reports and does not change the joint calibration. Apply an offset only when every run agrees on it. `solve` also prints where the board sits relative to `base_link`; on the table it should be at ~0 mm and ~0°.
+
+Result on 2026-10-28 (114 samples from 3 runs): the `shoulder_lift` zero was off by +10.5° and is now corrected in the calibration file (2048 → 1929). After that, the board spread is 4.7 mm / 0.71° and the camera sits at (−1.2, 69.5, −5.1) mm in `gripper_link`. Recalibrating `shoulder_lift` with `so101_calibrate.py` would undo this correction. See [devlog day 3](../docs/devlog/2026-10-28-day-3.md).
+
+`solve` checks every method by where it puts the (fixed) board in `base_link`; the spread across samples is the quality measure. Samples (`~/so101_data/hand_eye/`) store raw ticks and images, so `solve` can be rerun after a joint or camera recalibration. Result: [`so101_perception/config/wrist_camera_hand_eye.yaml`](../so101_perception/config/wrist_camera_hand_eye.yaml), `gripper_link` → `wrist_camera_optical_frame` (OpenCV optical frame of the upright image).
