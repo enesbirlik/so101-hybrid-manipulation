@@ -42,7 +42,7 @@ Single source of truth: [`roadmap.json`](roadmap.json).
 |---|---|---|
 | 1 | Parts, BOM & 3D prints | ✅ done |
 | 2 | Assembly & first motor test | ✅ done (2026-10-25) |
-| 3 | Calibration, URDF matching, fisheye camera calibration | ⬜ todo |
+| 3 | Calibration, URDF matching, fisheye camera calibration | 🚧 active (joints ✅, camera intrinsics ✅, hand-eye ⬜) |
 | 4 | C++ `ros2_control` interface + MoveIt 2 | ⬜ todo |
 | 5 | Perception: ArUco + object detection → classical pick & place | ⬜ todo |
 | 6 | Behavior Tree + demonstration data + VLA policy | ⬜ todo |
@@ -86,7 +86,7 @@ ros2 launch so101_description display.launch.py
 | [`so101_perception/`](so101_perception/) | Camera calibration, ArUco, object detection | placeholder (phases 3, 5) |
 | [`so101_bt/`](so101_bt/) | Behavior Tree orchestration and handover logic | placeholder (phases 6, 7) |
 | [`so101_policy/`](so101_policy/) | Demonstration data and VLA policy inference | placeholder (phase 6) |
-| [`tools/`](tools/) | Standalone helper scripts (servo bring-up, diagnostics) | README |
+| [`tools/`](tools/) | Standalone helper scripts: Feetech bus driver, joint calibration, live joint states, teleop, camera calibration | active |
 | [`web/`](web/) | three.js URDF viewer for the portfolio | README |
 | [`docs/devlog/`](docs/devlog/) | Dated build log entries | active |
 | [`docs/research/`](docs/research/) | Hypotheses, metrics, experiment protocol | draft |
@@ -95,6 +95,8 @@ ros2 launch so101_description display.launch.py
 ## Devlog
 
 - [Day 0 — Hardware & first motor test](docs/devlog/2026-10-25-day-0.md) (2026-10-25)
+- [Day 1 — Bus driver, joint calibration & live RViz view](docs/devlog/2026-10-27-day-1.md) (2026-10-27)
+- [Day 2 — Fisheye calibration of the wrist camera](docs/devlog/2026-10-28-day-2.md) (2026-10-28)
 
 New entries follow [`docs/devlog/template.md`](docs/devlog/template.md). Videos are linked from the entries, not stored in the repo.
 

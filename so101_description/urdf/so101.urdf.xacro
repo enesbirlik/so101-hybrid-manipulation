@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<!-- Entry point: the vendored SO-101 arm, optionally with the wrist camera. -->
+<robot name="so101" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="use_wrist_camera" default="true"/>
+
+  <xacro:include filename="$(find so101_description)/urdf/so101_new_calib.urdf"/>
+
+  <xacro:if value="$(arg use_wrist_camera)">
+    <xacro:include filename="$(find so101_description)/urdf/wrist_camera.xacro"/>
+    <xacro:so101_wrist_camera parent="gripper_link"/>
+  </xacro:if>
+</robot>

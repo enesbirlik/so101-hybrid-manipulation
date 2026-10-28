@@ -1,0 +1,54 @@
+# SO-101 follower calibration, written by tools/so101_calibrate.py
+# date: 2026-10-27T22:38:34
+# port: /dev/serial/by-id/usb-1a86_USB_Single_Serial_5B14111685-if00
+#
+# All ticks are servo Present_Position values with homing_offset applied
+# (the offset is stored in each servo's EEPROM, address 31).
+#   joint_rad = direction * (ticks - zero) * 2*pi / 4096
+# zero is the pose held at Enter during calibration (the URDF zero pose);
+# for elbow_flex and the gripper it comes from a hard stop (folded = +91.8 deg,
+# closed = -10 deg).
+# direction is not measured: verify it against RViz before trusting it.
+joints:
+  shoulder_pan:
+    id: 1
+    homing_offset: -1954
+    range_min: 752
+    range_max: 3435
+    zero: 2048
+    direction: 1
+  shoulder_lift:
+    id: 2
+    homing_offset: -933
+    range_min: 787
+    range_max: 3166
+    zero: 2048
+    direction: 1
+  elbow_flex:
+    id: 3
+    homing_offset: 1109
+    range_min: 952
+    range_max: 3145
+    zero: 2101
+    direction: 1
+  wrist_flex:
+    id: 4
+    homing_offset: -1897
+    range_min: 734
+    range_max: 3242
+    zero: 2048
+    direction: 1
+  wrist_roll:
+    id: 5
+    homing_offset: 1759
+    range_min: 145
+    range_max: 3961
+    zero: 2048
+    direction: 1
+  gripper:
+    id: 6
+    homing_offset: 33
+    range_min: 2044
+    range_max: 3510
+    zero: 2158
+    direction: 1
