@@ -42,7 +42,7 @@ Single source of truth: [`roadmap.json`](roadmap.json).
 |---|---|---|
 | 1 | Parts, BOM & 3D prints | ✅ done |
 | 2 | Assembly & first motor test | ✅ done (2026-10-25) |
-| 3 | Calibration, URDF matching, fisheye camera calibration | 🚧 active (joints ✅, camera intrinsics ✅, hand-eye ⬜) |
+| 3 | Calibration, URDF matching, fisheye camera calibration | 🚧 active (joints ✅, camera intrinsics ✅, hand-eye ✅, elbow/wrist zeros and torque-on jerk open) |
 | 4 | C++ `ros2_control` interface + MoveIt 2 | ⬜ todo |
 | 5 | Perception: ArUco + object detection → classical pick & place | ⬜ todo |
 | 6 | Behavior Tree + demonstration data + VLA policy | ⬜ todo |
@@ -97,6 +97,7 @@ ros2 launch so101_description display.launch.py
 - [Day 0 — Hardware & first motor test](docs/devlog/2026-10-25-day-0.md) (2026-10-25)
 - [Day 1 — Bus driver, joint calibration & live RViz view](docs/devlog/2026-10-27-day-1.md) (2026-10-27)
 - [Day 2 — Fisheye calibration of the wrist camera](docs/devlog/2026-10-28-day-2.md) (2026-10-28)
+- [Day 3 — Hand-eye calibration, and a 10° shoulder error it uncovered](docs/devlog/2026-10-28-day-3.md) (2026-10-28)
 
 New entries follow [`docs/devlog/template.md`](docs/devlog/template.md). Videos are linked from the entries, not stored in the repo.
 

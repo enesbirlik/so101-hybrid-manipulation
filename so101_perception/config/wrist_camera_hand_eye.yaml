@@ -1,0 +1,10 @@
+# so101_hand_eye.py, 2026-10-28 22:00, method park, 114 samples
+# board spread in base_link: 4.7 mm, 0.71 deg (RMS)
+# child frame = OpenCV optical frame of the upright 1280x720 image (x right, y down, z forward)
+# rpy is URDF order (R = Rz(yaw) Ry(pitch) Rx(roll)), metres and radians
+parent_frame: gripper_link
+child_frame: wrist_camera_optical_frame
+translation: {x: -0.0011534305819868446, y: 0.06953882272106336, z: -0.00506823270395594}
+rotation: {x: 0.9740236728073527, y: 0.023156667188898722, z: 0.0034557156115520003,
+  w: 0.22523257225630125}
+rpy: [2.687188774369029, 0.003699382210357292, 0.046684238379435555]
