@@ -22,7 +22,7 @@ joints:
     homing_offset: -933
     range_min: 787
     range_max: 3166
-    zero: 2048
+    zero: 1929   # was 2048; +10.5 deg from the hand-eye table fit, 2026-10-28 (devlog day 3)
     direction: 1
   elbow_flex:
     id: 3
