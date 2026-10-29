@@ -72,13 +72,6 @@ RANGE_MARGIN_DEG = 5.0   # stay this far inside the calibrated range
 MIN_HEIGHT = 0.05        # m; gripper_link and gripper_frame_link stay this high above base_link
 SETTLE_S = 1.0           # wait after arriving, before the still check and the frame
 MIN_VISIBLE = 0.7        # predicted share of board corners inside the image
-# Predicted by the unverified encoder-wrap theory (devlog day 1): with torque on these
-# joints jerked into their stops outside (lower, upper) [deg]. Auto keeps away from there.
-# Angles of the current calibration: the shoulder_lift zero moved +10.5 deg on 2026-10-28,
-# so the old -98 deg is now -87.5 deg (same encoder position).
-JERK_SAFE_DEG = {"shoulder_pan": (-8, None), "shoulder_lift": (-87.5, None), "elbow_flex": (None, 83),
-                 "wrist_flex": (-13, None), "wrist_roll": (None, 25)}
-JERK_MARGIN_DEG = 3.0
 # solve --refine-joints: zero offsets that can be told apart from the camera and board
 # poses. Pan and roll offsets cannot: they just turn the board (about the vertical) or the camera.
 REFINE_JOINTS = ["shoulder_lift", "elbow_flex", "wrist_flex"]
@@ -340,9 +333,6 @@ def pose_problem(q_deg, cal, chains):
         lo, hi = sorted((to_deg(cal[n]["range_min"], cal[n]), to_deg(cal[n]["range_max"], cal[n])))
         if not lo + RANGE_MARGIN_DEG <= v <= hi - RANGE_MARGIN_DEG:
             return f"{n} {v:+.0f} deg is outside its range"
-        safe_lo, safe_hi = JERK_SAFE_DEG.get(n, (None, None))
-        if (safe_lo is not None and v < safe_lo + JERK_MARGIN_DEG) or (safe_hi is not None and v > safe_hi - JERK_MARGIN_DEG):
-            return f"{n} {v:+.0f} deg is in its predicted jerk zone"
     q = {n: np.radians(v) for n, v in q_deg.items()}
     if min(forward(c, q)[2, 3] for c in chains) < MIN_HEIGHT:
         return "too close to the table"
@@ -446,7 +436,7 @@ def cmd_auto(args):
 
             poses = plan_poses(centre, args.poses, np.random.default_rng(args.seed), allowed)
             if not poses:
-                sys.exit("no allowed pose around this centre: pick one further from the joint limits and jerk zones")
+                sys.exit("no allowed pose around this centre: pick one further from the joint limits and the table")
             print(f"{len(poses)} poses, each reached from both sides: {2 * len(poses)} samples, "
                   f"about {len(poses) * 12 // 60 + 1} min.")
             print("The arm moves on its own. Stay next to it: q in the window or Ctrl+C freezes it in place.")
