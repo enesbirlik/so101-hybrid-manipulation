@@ -48,9 +48,10 @@ STALL_WINDOW = 0.5       # s; a joint that gets no closer to its goal within thi
 MOVE_SPEED = 200         # step/s, about 18 deg/s
 MOVE_ACC = 10            # 100 step/s^2
 MOVE_TORQUE = 100        # % of max torque; 70 % could not hold the arm horizontal
-# Going to zero from the folded rest pose: lift the upper arm first, then unfold the
-# elbow, then the rest. Moving all at once pushed the forearm into the table.
-ZERO_STAGES = [{"shoulder_lift"}, {"elbow_flex"}, {"shoulder_pan", "wrist_flex", "wrist_roll", "gripper"}]
+# Going to zero from the folded rest pose: unfold the elbow first, then the lift, then the
+# rest. Lifting first with the elbow folded swings the hand down: the jaw hit the table at
+# lift -18 deg (2026-10-29). URDF FK: elbow first keeps every link >= 146 mm above the table.
+ZERO_STAGES = [{"elbow_flex"}, {"shoulder_lift"}, {"shoulder_pan", "wrist_flex", "wrist_roll", "gripper"}]
 
 
 @dataclass
