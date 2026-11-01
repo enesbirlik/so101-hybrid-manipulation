@@ -48,7 +48,9 @@ HAND_LINKS = {"wrist_link", "gripper_link", "moving_jaw_so101_v1_link"} | set(CA
 # probe
 SAMPLE_DEG = {"shoulder_pan": (-30, 30), "shoulder_lift": (-60, 30), "elbow_flex": (-40, 85),
               "wrist_flex": (-90, 90), "wrist_roll": (-45, 45)}   # wider roll winds up the camera cable
-DESCENT_JOINTS = ["elbow_flex", "wrist_flex"]   # alternated; the lift is too heavy at reduced torque
+# The lift is too heavy at reduced torque. wrist_flex touches were not detected on 2026-10-29
+# (its lag barely rises), so only the elbow lowers; the wrist angle still varies per pose.
+DESCENT_JOINTS = ["elbow_flex"]
 APPROACH_MM = 40.0       # the model puts the lowest point this high above the table before lowering
 TRAVEL_CLEARANCE_MM = 30.0
 RANGE_MARGIN_DEG = 5.0
@@ -56,6 +58,7 @@ DESCENT_DEG_S = 3.0
 DESCENT_TORQUE = 60      # % for the lowering joint; the others hold at 100 %
 MAX_DESCENT_DEG = 45.0   # the model was 39 mm too low in a folded pose: leave room for that
 CONTACT_LAG_DEG = 1.5    # lag beyond the running baseline that counts as a touch
+ONSET_LAG_DEG = 0.3      # the touch began at the last position still this close to the baseline
 BASELINE_S = (1.5, 0.5)  # the baseline is the median lag between these many seconds ago
 
 # fit
@@ -189,13 +192,14 @@ def freeze(bus, joints):
         bus.write_u16(j.id, fb.GOAL_POSITION, bus.read_position(j.id))
 
 
-def descend(bus, j, c, start, sign, view):
+def descend(bus, j, c, start, sign, view, torque=DESCENT_TORQUE, contact=CONTACT_LAG_DEG):
     """Lower the hand with joint j from `start` [deg] until it stops following. Returns the
-    touch (True) or why there was none."""
+    joint angle [deg] where the touch began, or why there was none. By the time the lag
+    counts as a touch the joint has pushed on (and bent the arm) a little further."""
     lo, hi = joint_limits({j.name: c}, j.name)
-    lags = []  # (time, lag)
+    lags = []  # (time, lag, position)
     t0 = time.monotonic()
-    bus.write_u16(j.id, fb.TORQUE_LIMIT, DESCENT_TORQUE * 10)
+    bus.write_u16(j.id, fb.TORQUE_LIMIT, torque * 10)
     try:
         while True:
             now = time.monotonic() - t0
@@ -209,16 +213,37 @@ def descend(bus, j, c, start, sign, view):
             except FeetechError:
                 continue
             lag = sign * (goal - pos)  # > 0: behind the goal
-            lags.append((now, lag))
-            base = [l for t, l in lags if now - BASELINE_S[0] <= t <= now - BASELINE_S[1]]
+            lags.append((now, lag, pos))
+            base = [l for t, l, _ in lags if now - BASELINE_S[0] <= t <= now - BASELINE_S[1]]
             base = float(np.median(base)) if now > BASELINE_S[0] else None
             view.show([f"  lowering {j.name}: goal {goal:+7.1f}°  at {pos:+7.1f}°  lag {lag:+5.1f}°"
                        + (f"  (baseline {base:+.1f}°)" if base is not None else "")])
-            if base is not None and lag - base > CONTACT_LAG_DEG:
-                return True
+            if base is not None and lag - base > contact:
+                return next((p for _, l, p in reversed(lags) if l - base <= ONSET_LAG_DEG), lags[0][2])
     finally:
         freeze(bus, [j])
         bus.write_u16(j.id, fb.TORQUE_LIMIT, 1000)
+
+
+def hover(bus, cal, arm, j, p, model, args, out):
+    """Lower joint j until the model puts the lowest point args.hover_mm above the table, hold
+    there, and ask for the gap seen by eye. Checks the model without touching anything."""
+    q = dict(p["q"])
+    while model.height(q) > args.hover_mm / 1000 and abs(q[j.name] - p["q"][j.name]) < MAX_DESCENT_DEG:
+        q[j.name] += 0.2 * p["sign"]
+    bus.write_u16(j.id, fb.TORQUE_LIMIT, args.torque * 10)   # if the hand is lower than the model, it only leans on the table
+    try:
+        stuck = move_joints(bus, cal, arm, to_target(cal, q))
+    finally:
+        bus.write_u16(j.id, fb.TORQUE_LIMIT, 1000)
+    ticks = read_ticks(bus, arm)
+    q = {**q, **{n: to_deg(t, cal[n]) for n, t in ticks.items()}}
+    link, h, _ = model.lowest(q)
+    print(f"  hovering: model puts {link} {h * 1000:+.0f} mm above the table" + ("  (it stopped early: touching?)" if stuck else ""))
+    seen = input("  gap you see, mm (0 = touching; Enter skips): ").strip()
+    out.write(json.dumps({"ticks": ticks, "joint": j.name, "model_mm": round(h * 1000, 1), "link": link,
+                          "seen_mm": float(seen) if seen else None}) + "\n")
+    out.flush()
 
 
 def to_target(cal, q_deg):
@@ -241,7 +266,7 @@ def cmd_probe(args):
 
     run = DATA_DIR / datetime.now().strftime("%Y%m%d_%H%M%S")
     run.mkdir(parents=True)
-    out = open(run / "touches.jsonl", "w")
+    out = open(run / ("hover.jsonl" if args.hover_mm is not None else "touches.jsonl"), "w")   # fit reads touches only
     with open_bus(args) as bus:
         require_servos(bus, joints)
         print("The arm goes to zero (elbow first), then probes. Keep the table under the hand clear.")
@@ -262,17 +287,27 @@ def cmd_probe(args):
                     if stuck:
                         raise Abort(f"stuck while moving ({', '.join(stuck)}): something is in the way")
                 j = next(j for j in arm if j.name == p["joint"])
-                result = descend(bus, j, cal[j.name], p["q"][j.name], p["sign"], view)
+                if args.hover_mm is not None:
+                    hover(bus, cal, arm, j, p, model, args, out)
+                    stuck = move_joints(bus, cal, arm, to_target(cal, p["q"]))
+                    if stuck:
+                        raise Abort(f"could not back up from the table ({', '.join(stuck)})")
+                    continue
+                result = descend(bus, j, cal[j.name], p["q"][j.name], p["sign"], view, args.torque, args.contact_deg)
                 time.sleep(0.3)
                 ticks = read_ticks(bus, joints)
-                if result is True:
+                if not isinstance(result, str):
                     q = {n: to_deg(t, cal[n]) for n, t in ticks.items()}
                     link, h, _ = model.lowest(q)
+                    h_onset = model.height({**q, j.name: result})
                     touches += 1
                     print(f"  touch: {j.name} {q[j.name]:+.1f}° (model said {p['touch']:+.0f}°), "
-                          f"model puts {link} {h * 1000:+.1f} mm off the table")
+                          f"model puts {link} {h * 1000:+.1f} mm off the table; "
+                          f"at the onset ({result:+.1f}°) {h_onset * 1000:+.1f} mm")
                     out.write(json.dumps({"ticks": ticks, "joint": j.name, "sign": p["sign"],
-                                          "model_mm": round(h * 1000, 1), "link": link}) + "\n")
+                                          "model_mm": round(h * 1000, 1), "link": link,
+                                          "onset_deg": round(result, 2), "onset_mm": round(h_onset * 1000, 1),
+                                          "torque": args.torque}) + "\n")
                     out.flush()
                 else:
                     print(f"  {result}")
@@ -368,6 +403,12 @@ def main():
     probe.add_argument("--poses", type=int, default=20)
     probe.add_argument("--seed", type=int, default=0)
     probe.add_argument("--dry-run", action="store_true", help="only plan and print the poses")
+    probe.add_argument("--torque", type=int, default=DESCENT_TORQUE,
+                       help=f"torque limit of the lowering joint, %% (default: {DESCENT_TORQUE}); less pushes less on the table")
+    probe.add_argument("--contact-deg", type=float, default=CONTACT_LAG_DEG,
+                       help=f"lag over the baseline that counts as a touch (default: {CONTACT_LAG_DEG})")
+    probe.add_argument("--hover-mm", type=float,
+                       help="do not touch: stop where the model puts the hand this high above the table and ask for the gap seen")
     probe.add_argument("--table-mm", type=float, default=0.0,
                        help="where the table is for planning, relative to the lowest point of the base (negative: below)")
     fit = sub.add_parser("fit")
