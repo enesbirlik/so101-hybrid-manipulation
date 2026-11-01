@@ -10,6 +10,9 @@
            capture + solve to keep the board in view)
   solve    cv2.calibrateHandEye (eye-in-hand) on the saved samples -> YAML;
            for auto samples it also reports the play between both approaches
+  kinematics
+           fit the camera pose and the shoulder_lift, elbow_flex and wrist_flex
+           joint origins together on samples from several board placements
 
 The board must not move during a capture session: the solver relies on it
 staying at one place in base_link. Vary the gripper orientation as much as
@@ -21,7 +24,8 @@ inside its gear play and wobble the encoder does not see; with torque on the
 servo holds its output shaft, and nobody touches the arm.
 
 Forward kinematics come straight from so101_new_calib.urdf (base_link ->
-gripper_link) and the joint calibration file, so ROS does not need to run.
+gripper_link), with the joint origins from so101_kinematics.yaml, and the
+joint calibration file, so ROS does not need to run.
 Samples keep raw ticks and corners, so `solve` can be rerun after a joint or
 camera recalibration without capturing again.
 
@@ -48,12 +52,13 @@ from scipy.optimize import least_squares
 import feetech_bus as fb
 from feetech_bus import FeetechBus, FeetechError
 import so101_camera_calib as cam
-from so101_calibrate import DEFAULT_FILE as JOINT_FILE, JOINTS, TICKS_PER_DEG, Abort, hold_all, load_calibration, \
-    move_joints, to_deg
+from so101_calibrate import DEFAULT_FILE as JOINT_FILE, JOINTS, TICKS_PER_DEG, Abort, go_to_zero, hold_all, \
+    load_calibration, move_joints, to_deg
 
 REPO = Path(__file__).resolve().parents[1]
 URDF = REPO / "so101_description" / "urdf" / "so101_new_calib.urdf"
 CAMERA_XACRO = REPO / "so101_description" / "urdf" / "wrist_camera.xacro"
+KINEMATICS_FILE = REPO / "so101_description" / "config" / "so101_kinematics.yaml"
 DEFAULT_SAMPLES = Path.home() / "so101_data" / "hand_eye"
 DEFAULT_FILE = REPO / "so101_perception" / "config" / "wrist_camera_hand_eye.yaml"
 
@@ -72,19 +77,22 @@ RANGE_MARGIN_DEG = 5.0   # stay this far inside the calibrated range
 MIN_HEIGHT = 0.05        # m; gripper_link and gripper_frame_link stay this high above base_link
 SETTLE_S = 1.0           # wait after arriving, before the still check and the frame
 MIN_VISIBLE = 0.7        # predicted share of board corners inside the image
-# Predicted by the unverified encoder-wrap theory (devlog day 1): with torque on these
-# joints jerked into their stops outside (lower, upper) [deg]. Auto keeps away from there.
-# Angles of the current calibration: the shoulder_lift zero moved +10.5 deg on 2026-10-28,
-# so the old -98 deg is now -87.5 deg (same encoder position).
-JERK_SAFE_DEG = {"shoulder_pan": (-8, None), "shoulder_lift": (-87.5, None), "elbow_flex": (None, 83),
-                 "wrist_flex": (-13, None), "wrist_roll": (None, 25)}
-JERK_MARGIN_DEG = 3.0
+# The jaws cover this part of every upright image (measured on 13 frames, 20 px margin).
+JAW_POLYGON = np.array([[510, 410], [600, 410], [1050, 720], [210, 720]], np.float32)
+SIDE_DISTANCE = 0.25     # m; auto --side: the computed centre sees the board centre from about this far
+SIDE_AIM_PX = (640, 230) # ... at this pixel, above the jaws
+PATH_STEPS = 20          # checks along the straight joint path to the computed centre
 # solve --refine-joints: zero offsets that can be told apart from the camera and board
 # poses. Pan and roll offsets cannot: they just turn the board (about the vertical) or the camera.
 REFINE_JOINTS = ["shoulder_lift", "elbow_flex", "wrist_flex"]
 # The board lies on the table the arm stands on. base_link is 2.4 mm above the lowest point
 # of the base meshes, about the thickness of the board on its backing, so its top is at ~0.
 BOARD_Z = 0.0
+# kinematics: these joint origins move across their parent link (along the axis a shift
+# changes nothing the camera sees), and the axes of REFINE_JOINTS tilt. The zero offsets
+# stay out: with the geometry free they come out within 1 deg and change nothing held out.
+# An elbow_flex shift did not help either (held out 7.6 px without it, 7.8 px with it).
+KIN_SHIFT = ["wrist_flex"]
 
 METHODS = {
     "tsai": cv2.CALIB_HAND_EYE_TSAI,
@@ -145,8 +153,24 @@ def origin_transform(joint):
                      [float(v) for v in o.get("xyz", "0 0 0").split()])
 
 
-def load_chain(path, base, tool):
-    """Joints from base to tool as (name, fixed origin, axis or None for fixed joints)."""
+def load_kinematics(path=KINEMATICS_FILE):
+    """Calibrated joint origins of the URDF: {joint: {xyz, rpy, cad: {xyz, rpy}}}."""
+    with open(path) as f:
+        return yaml.safe_load(f)["joints"]
+
+
+def load_table_z(path=KINEMATICS_FILE):
+    """The table surface in base_link [m] for the calibrated origins, or None if not measured."""
+    with open(path) as f:
+        return yaml.safe_load(f).get("table_z")
+
+
+def load_chain(path, base, tool, cad=False):
+    """Joints from base to tool as (name, fixed origin, axis or None for fixed joints).
+
+    The URDF takes some joint origins from the kinematics file: calibrated, or the upstream
+    CAD values with cad=True."""
+    kinematics = load_kinematics() if path == URDF else {}
     # iter() also reaches into xacro macros; <joint> inside <transmission> has no child
     joints = [j for j in ET.parse(path).getroot().iter("joint") if j.find("child") is not None]
     by_child = {j.find("child").get("link"): j for j in joints}
@@ -154,7 +178,13 @@ def load_chain(path, base, tool):
     while link != base:
         j = by_child[link]
         axis = None if j.get("type") == "fixed" else np.array([float(v) for v in j.find("axis").get("xyz").split()])
-        chain.append((j.get("name"), origin_transform(j), axis))
+        if j.get("name") in kinematics:
+            o = kinematics[j.get("name")]
+            o = o["cad"] if cad else o
+            origin = transform(rpy_matrix(*o["rpy"]), o["xyz"])
+        else:
+            origin = origin_transform(j)
+        chain.append((j.get("name"), origin, axis))
         link = j.find("parent").get("link")
     return chain[::-1]
 
@@ -210,7 +240,7 @@ def load_hand_eye(path):
 
 
 def board_visible(T_cb, board_points, K, D, margin=30):
-    """Share of board corners a camera at T_cb (camera -> board) would see."""
+    """Share of board corners a camera at T_cb (camera -> board) would see, beside the jaws."""
     pts = board_points @ T_cb[:3, :3].T + T_cb[:3, 3]
     if (pts[:, 2] < 0.05).any():
         return 0.0
@@ -218,7 +248,8 @@ def board_visible(T_cb, board_points, K, D, margin=30):
                                      np.ascontiguousarray(T_cb[:3, 3]).reshape(3, 1), K, D)
     p = p.reshape(-1, 2)
     inside = (p[:, 0] > margin) & (p[:, 0] < cam.WIDTH - margin) & (p[:, 1] > margin) & (p[:, 1] < cam.HEIGHT - margin)
-    return float(inside.mean())
+    jaw = np.array([cv2.pointPolygonTest(JAW_POLYGON, (float(x), float(y)), False) >= 0 for x, y in p])
+    return float((inside & ~jaw).mean())
 
 
 def board_pose(corners, ids, board_points, K, D):
@@ -340,22 +371,19 @@ def pose_problem(q_deg, cal, chains):
         lo, hi = sorted((to_deg(cal[n]["range_min"], cal[n]), to_deg(cal[n]["range_max"], cal[n])))
         if not lo + RANGE_MARGIN_DEG <= v <= hi - RANGE_MARGIN_DEG:
             return f"{n} {v:+.0f} deg is outside its range"
-        safe_lo, safe_hi = JERK_SAFE_DEG.get(n, (None, None))
-        if (safe_lo is not None and v < safe_lo + JERK_MARGIN_DEG) or (safe_hi is not None and v > safe_hi - JERK_MARGIN_DEG):
-            return f"{n} {v:+.0f} deg is in its predicted jerk zone"
     q = {n: np.radians(v) for n, v in q_deg.items()}
     if min(forward(c, q)[2, 3] for c in chains) < MIN_HEIGHT:
         return "too close to the table"
     return None
 
 
-def plan_poses(centre, count, rng, allowed):
+def plan_poses(centre, count, rng, allowed, spread=1.0):
     """Random poses around centre that pass allowed() together with both approach poses, in a short visiting order."""
     poses = []
-    for _ in range(5000):
+    for _ in range(int(5000 * spread ** 3)):
         if len(poses) == count:
             break
-        q = {n: v + rng.uniform(-AUTO_SPREAD_DEG[n], AUTO_SPREAD_DEG[n]) for n, v in centre.items()}
+        q = {n: v + spread * rng.uniform(-AUTO_SPREAD_DEG[n], AUTO_SPREAD_DEG[n]) for n, v in centre.items()}
         if all(allowed({n: v + s * APPROACH_DEG for n, v in q.items()}) for s in (0, 1, -1)):
             poses.append(q)
     ordered, current = [], centre
@@ -400,6 +428,60 @@ def teach_centre(bus, cap, cal, names, chains, board, dictionary, board_points, 
             return q, T_cb
 
 
+def board_from_samples(folder, cal, chain, T_gc, board, dictionary, board_points, K, D):
+    """Board pose in base_link from the samples already in folder, or None. Good to a few
+    mm and degrees, enough to aim the camera at it."""
+    T = []
+    for s in load_samples(folder):
+        gray = cv2.imread(str(folder / s["image"]), cv2.IMREAD_GRAYSCALE)
+        corners, ids = cam.detect(gray, board, dictionary) if gray is not None else (None, None)
+        if ids is not None and len(ids) >= MIN_CORNERS:
+            T_cb = board_pose(corners, ids, board_points, K, D)[0]
+            T.append(forward(chain, to_rad(s["ticks"], cal)) @ T_gc @ T_cb)
+    if not T:
+        return None
+    return transform(mean_rotation([t[:3, :3] for t in T]), np.median([t[:3, 3] for t in T], 0))
+
+
+def side_centre(T_bt, side_deg, cal, chain, T_gc, board_points, K, D, allowed, rng):
+    """Centre pose [deg] with shoulder_pan side_deg away from facing the board, whose camera
+    sees the board centre at SIDE_AIM_PX from about SIDE_DISTANCE, or None. Seen from the side,
+    the board cannot absorb a shoulder_lift / elbow_flex trade-off as a shift along the arm."""
+    target = T_bt[:3, :3] @ board_points.mean(0) + T_bt[:3, 3]
+    aim = np.r_[cv2.fisheye.undistortPoints(np.array([[SIDE_AIM_PX]], np.float64), K, D).ravel(), 1.0]
+    aim /= np.linalg.norm(aim)
+    names = [n for n, _, axis in chain if axis is not None]
+    limits = {n: sorted((to_deg(cal[n]["range_min"], cal[n]), to_deg(cal[n]["range_max"], cal[n]))) for n in names}
+
+    def azimuth(q):
+        p = forward(chain, {n: np.radians(v) for n, v in q.items()})[:3, 3]
+        return np.arctan2(p[1], p[0])
+    rest = {n: 0.0 for n in names}
+    facing = min(np.arange(-90.0, 90.5, 0.5), key=lambda pan: abs(np.angle(np.exp(1j * (
+        azimuth({**rest, "shoulder_pan": pan}) - np.arctan2(target[1], target[0]))))))
+    pan = facing + side_deg
+    candidates = []
+    for _ in range(20000):
+        q = {n: rng.uniform(lo + RANGE_MARGIN_DEG, hi - RANGE_MARGIN_DEG) for n, (lo, hi) in limits.items()}
+        q["shoulder_pan"] = pan
+        T_bc = forward(chain, {n: np.radians(v) for n, v in q.items()}) @ T_gc
+        v = np.linalg.inv(T_bc)[:3, :3] @ target + np.linalg.inv(T_bc)[:3, 3]   # board centre, camera frame
+        dist = np.linalg.norm(v)
+        off_axis = np.degrees(np.arccos(np.clip(v @ aim / dist, -1, 1)))
+        if off_axis < 15:   # a small roll keeps the camera cable slack
+            candidates.append((off_axis / 15 + abs(dist - SIDE_DISTANCE) / 0.05 + abs(q["wrist_roll"]) / 90, q))
+    for _, q in sorted(candidates, key=lambda c: c[0]):
+        if allowed(q):
+            return q
+    return None
+
+
+def path_clear(start, end, cal, chains):
+    """The straight joint path between two poses [deg] stays allowed (ranges, table)."""
+    return all(not pose_problem({n: start[n] + s * (end[n] - start[n]) for n in end}, cal, chains)
+               for s in np.linspace(0, 1, PATH_STEPS))
+
+
 def grab_still(bus, cap, cal, names):
     """Frame and joint ticks after settling; the frame is None if a joint still moved."""
     time.sleep(SETTLE_S)
@@ -432,25 +514,64 @@ def cmd_auto(args):
         cv2.namedWindow("hand-eye", cv2.WINDOW_NORMAL)
         started = False   # torque switched on, the arm moves
         try:
-            taught = teach_centre(bus, cap, cal, names, chains, board, dictionary, board_points, K, D)
-            if taught is None:
-                return
-            centre, T_cb0 = taught
-            T_bt = forward(chain, {n: np.radians(v) for n, v in centre.items()}) @ T_gc @ T_cb0
-
             def allowed(q):
                 if pose_problem(q, cal, chains):
                     return False
                 T_bg = forward(chain, {n: np.radians(v) for n, v in q.items()})
                 return board_visible(np.linalg.inv(T_bg @ T_gc) @ T_bt, board_points, K, D) >= MIN_VISIBLE
 
-            poses = plan_poses(centre, args.poses, np.random.default_rng(args.seed), allowed)
+            if args.side is None:
+                taught = teach_centre(bus, cap, cal, names, chains, board, dictionary, board_points, K, D)
+                if taught is None:
+                    return
+                centre, T_cb0 = taught
+            else:
+                # Aim at the board seen in the earlier runs, then measure it again from the centre.
+                T_bt = board_from_samples(args.samples, cal, chain, T_gc, board, dictionary, board_points, K, D)
+                if T_bt is None:
+                    sys.exit(f"--side aims at the board seen in {args.samples}: run one auto with a taught centre first")
+                centre = side_centre(T_bt, args.side, cal, chain, T_gc, board_points, K, D, allowed,
+                                     np.random.default_rng(args.seed))
+                if centre is None:
+                    sys.exit(f"no allowed pose sees the board with shoulder_pan {args.side:+.0f} deg off it: try a smaller --side")
+                print("computed centre: " + "  ".join(f"{n.split('_')[1]} {v:+.1f}" for n, v in centre.items()))
+                print("The board must still lie where it was in the earlier runs.")
+                # Draw the window once: left blank while input() blocks, it shows stale screen content.
+                wait = np.zeros((cam.HEIGHT, cam.WIDTH, 3), np.uint8)
+                cv2.putText(wait, "waiting for Enter in the terminal", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                            (255, 255, 255), 2)
+                cv2.imshow("hand-eye", wait)
+                cv2.waitKey(1)
+                input("Enter switches torque on and moves there ")
+                hold_all(bus, joints)
+                started = True
+                here = {n: to_deg(bus.read_position(cal[n]["id"]), cal[n]) for n in names}
+                if not path_clear(here, centre, cal, chains):
+                    print("  via the zero pose (elbow first)")
+                    if go_to_zero(bus, cal, joints):
+                        raise Abort("stuck on the way to zero")
+                    if not path_clear({n: 0.0 for n in names}, centre, cal, chains):
+                        raise Abort("no clear straight path from zero to the centre")
+                stuck = move_joints(bus, cal, joints, to_ticks(centre, cal))
+                if stuck:
+                    raise Abort(f"stuck: {', '.join(stuck)}")
+                frame, ticks = grab_still(bus, cap, cal, names)
+                corners, ids = cam.detect(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), board, dictionary) \
+                    if frame is not None else (None, None)
+                if ids is None or len(ids) < MIN_CORNERS:
+                    raise Abort(f"the board is not in view from the computed centre "
+                                f"({'still moving' if frame is None else f'{0 if ids is None else len(ids)} corners'})")
+                centre = {n: to_deg(t, cal[n]) for n, t in ticks.items()}
+                T_cb0 = board_pose(corners, ids, board_points, K, D)[0]
+            T_bt = forward(chain, {n: np.radians(v) for n, v in centre.items()}) @ T_gc @ T_cb0
+
+            poses = plan_poses(centre, args.poses, np.random.default_rng(args.seed), allowed, args.spread)
             if not poses:
-                sys.exit("no allowed pose around this centre: pick one further from the joint limits and jerk zones")
+                sys.exit("no allowed pose around this centre: pick one further from the joint limits and the table")
             print(f"{len(poses)} poses, each reached from both sides: {2 * len(poses)} samples, "
                   f"about {len(poses) * 12 // 60 + 1} min.")
             print("The arm moves on its own. Stay next to it: q in the window or Ctrl+C freezes it in place.")
-            input("Enter switches torque on and starts ")
+            input("Enter starts " if started else "Enter switches torque on and starts ")
             hold_all(bus, joints)
             started = True
             for k, q in enumerate(poses, 1):
@@ -598,6 +719,11 @@ def refine_report(chain, cal, used, obs, T_gc, T_bg, T_cb, K, D):
         print(f"    {n:<14}{np.degrees(offsets[n]):+6.2f} deg (+-{np.degrees(sd_n):.2f})   zero {c['zero']} -> {new_zero}")
     p = pose_matrix(fit.x[:6])[:3, 3] * 1000
     print(f"    camera at [{p[0]:6.1f} {p[1]:6.1f} {p[2]:6.1f}] mm with these offsets")
+    # Strongly correlated offsets trade off against each other: the data cannot tell them apart.
+    cov =np.linalg.pinv(fit.jac.T @ fit.jac)[9:, 9:]
+    corr = cov / np.sqrt(np.outer(np.diag(cov), np.diag(cov)))
+    print("    correlation " + "  ".join(f"{REFINE_JOINTS[a].split('_')[0]}/{REFINE_JOINTS[b].split('_')[0]} {corr[a, b]:+.2f}"
+                                      for a in range(len(REFINE_JOINTS)) for b in range(a + 1, len(REFINE_JOINTS))))
 
     # Held out: fit on every other pose, test on the rest. Both sides of an auto pose stay together.
     groups = sorted({s.get("pose", s["image"]) for s in used})
@@ -623,19 +749,43 @@ def refine_report(chain, cal, used, obs, T_gc, T_bg, T_cb, K, D):
                                              for n, v, e in zip(REFINE_JOINTS, fit.x[9:], sd[9:])))
 
 
-def cmd_solve(args):
-    cal, chain, names, K, D, board, dictionary, board_points = setup(args)
-    used, T_bg, T_cb, obs = [], [], [], []
-    for s in load_samples(args.samples):
-        gray = cv2.imread(str(args.samples / s["image"]), cv2.IMREAD_GRAYSCALE)
+def detect_samples(folder, board, dictionary, board_points, K, D):
+    """Samples with the board found: (samples, camera -> board, (board points, corners [px]))."""
+    used, T_cb, obs = [], [], []
+    for s in load_samples(folder):
+        gray = cv2.imread(str(folder / s["image"]), cv2.IMREAD_GRAYSCALE)
         corners, ids = cam.detect(gray, board, dictionary) if gray is not None else (None, None)
         if ids is None or len(ids) < MIN_CORNERS:
             print(f"  skip {s['image']}: board not found")
             continue
         used.append(s)
-        T_bg.append(forward(chain, to_rad(s["ticks"], cal)))
         T_cb.append(board_pose(corners, ids, board_points, K, D)[0])
         obs.append((board_points[ids.flatten()], corners.reshape(-1, 2).astype(np.float64)))
+    return used, T_cb, obs
+
+
+def save_hand_eye(path, T_gc, comments):
+    data = {
+        "parent_frame": TOOL,
+        "child_frame": "wrist_camera_optical_frame",
+        "translation": dict(zip("xyz", [float(v) for v in T_gc[:3, 3]])),
+        "rotation": dict(zip("xyzw", matrix_quaternion(T_gc[:3, :3]))),
+        "rpy": matrix_rpy(T_gc[:3, :3]),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        for line in comments:
+            f.write(f"# {line}\n")
+        f.write("# child frame = OpenCV optical frame of the upright 1280x720 image (x right, y down, z forward)\n")
+        f.write("# rpy is URDF order (R = Rz(yaw) Ry(pitch) Rx(roll)), metres and radians\n")
+        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=None)
+    print(f"saved {path}")
+
+
+def cmd_solve(args):
+    cal, chain, names, K, D, board, dictionary, board_points = setup(args)
+    used, T_cb, obs = detect_samples(args.samples, board, dictionary, board_points, K, D)
+    T_bg = [forward(chain, to_rad(s["ticks"], cal)) for s in used]
     print(f"{len(used)} usable samples in {args.samples}")
     if len(used) < MIN_SAMPLES:
         sys.exit(f"need at least {MIN_SAMPLES}, better 15-25")
@@ -676,23 +826,164 @@ def cmd_solve(args):
     tilt = np.degrees(np.arccos(abs(mean_rotation([T[:3, :3] for T in T_bt])[2, 2])))
     print(f"board in base_link: {height:+.1f} mm above base_link, tilted {tilt:.1f} deg (on the table: ~0, ~0)")
 
-    data = {
-        "parent_frame": TOOL,
-        "child_frame": "wrist_camera_optical_frame",
-        "translation": dict(zip("xyz", [float(v) for v in T_gc[:3, 3]])),
-        "rotation": dict(zip("xyzw", matrix_quaternion(T_gc[:3, :3]))),
-        "rpy": matrix_rpy(T_gc[:3, :3]),
-    }
-    args.file.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.file, "w") as f:
-        f.write(f"# so101_hand_eye.py, {datetime.now():%Y-%m-%d %H:%M}, method {best}, {len(used)} samples\n")
-        f.write(f"# board spread in base_link: {pos:.1f} mm, {rot:.2f} deg (RMS)\n")
-        f.write("# child frame = OpenCV optical frame of the upright 1280x720 image (x right, y down, z forward)\n")
-        f.write("# rpy is URDF order (R = Rz(yaw) Ry(pitch) Rx(roll)), metres and radians\n")
-        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=None)
-    print(f"saved {args.file}")
+    save_hand_eye(args.file, T_gc, [f"so101_hand_eye.py, {datetime.now():%Y-%m-%d %H:%M}, method {best}, {len(used)} samples",
+                                    f"board spread in base_link: {pos:.1f} mm, {rot:.2f} deg (RMS)"])
     if args.refine_joints:
         refine_report(chain, cal, used, obs, T_gc, T_bg, T_cb, K, D)
+
+
+# --- kinematics --------------------------------------------------------------
+
+def perpendicular(axis):
+    """Two unit vectors perpendicular to axis and to each other."""
+    u = np.cross(axis, [1.0, 0, 0] if abs(axis[0]) < 0.9 else [0, 1.0, 0])
+    u /= np.linalg.norm(u)
+    return u, np.cross(axis, u)
+
+
+def geometry_directions(chain):
+    """Per joint: directions its origin moves in (parent frame) and its axis tilts about (joint frame).
+
+    A tilt about the previous joint's axis is that joint's zero offset; for shoulder_lift it
+    is a shoulder_pan offset, which the board yaw absorbs, so that direction stays out."""
+    out, previous = {}, None
+    for name, origin, axis in chain:
+        if axis is None:
+            continue
+        shift = perpendicular(origin[:3, :3] @ axis) if name in KIN_SHIFT else ()
+        tilt = ()
+        if name in REFINE_JOINTS:
+            w = np.cross(axis, origin[:3, :3].T @ previous)
+            tilt = perpendicular(axis) if np.linalg.norm(w) < 0.1 else (w / np.linalg.norm(w),)
+        out[name] = (shift, tilt)
+        previous = axis
+    return out
+
+
+def adjusted_chain(chain, geometry):
+    """chain with the KIN_SHIFT origins moved across their parent link [m] and the
+    REFINE_JOINTS axes tilted [rad], along geometry_directions."""
+    directions, k, out = geometry_directions(chain), 0, []
+    for name, origin, axis in chain:
+        o = origin.copy()
+        shift, tilt = directions.get(name, ((), ()))
+        for u in shift:
+            o[:3, 3] += geometry[k] * u
+            k += 1
+        if tilt:
+            o = o @ transform(cv2.Rodrigues(sum(geometry[k + i] * u for i, u in enumerate(tilt)))[0])
+            k += len(tilt)
+        out.append((name, o, axis))
+    return out
+
+
+def kinematics_residuals(chain, data, x, nboards, K, D, free_board=False):
+    """Corner reprojection [px] for x = camera pose (6), one board pose per placement, geometry.
+
+    The board lies on the table (x, y, yaw each), or with free_board anywhere (6 each).
+    data: (joint angles, placement, board points, corners [px]) per sample."""
+    nb = 6 if free_board else 3
+    T_cg = np.linalg.inv(pose_matrix(x[:6]))
+    T_bt = [(pose_matrix if free_board else board_on_table)(x[6 + nb * i:6 + nb * (i + 1)]) for i in range(nboards)]
+    ch = adjusted_chain(chain, x[6 + nb * nboards:])
+    out = []
+    for q, i, obj, img in data:
+        T_cb = T_cg @ np.linalg.inv(forward(ch, q)) @ T_bt[i]
+        p, _ = cv2.fisheye.projectPoints(obj.reshape(-1, 1, 3), cv2.Rodrigues(T_cb[:3, :3])[0],
+                                         np.ascontiguousarray(T_cb[:3, 3]).reshape(3, 1), K, D)
+        out.append((p.reshape(-1, 2) - img).ravel())
+    return np.concatenate(out)
+
+
+def kinematics_fit(chain, data, x0, free, nboards, K, D, free_board=False):
+    """x0 with the `free` parameters fitted."""
+    def residuals(z):
+        x = x0.copy()
+        x[free] = z
+        return kinematics_residuals(chain, data, x, nboards, K, D, free_board)
+    x = x0.copy()
+    x[free] = least_squares(residuals, x0[free], loss="huber", f_scale=3.0, x_scale="jac").x
+    return x
+
+
+def cmd_kinematics(args):
+    """Each folder is one board placement. The fit starts from the CAD joint origins."""
+    cal, _, _, K, D, board, dictionary, board_points = setup(args)
+    chain = load_chain(URDF, BASE, TOOL, cad=True)
+    T_gc = load_hand_eye(args.file)
+    if T_gc is None:
+        sys.exit(f"no hand-eye result in {args.file}: run solve first")
+    data, runs, x0 = [], [], [pose_vector(T_gc)]
+    for i, folder in enumerate(args.folders):
+        used, T_cb, obs = detect_samples(folder, board, dictionary, board_points, K, D)
+        keep = [k for k, s in enumerate(used) if s.get("pose", "manual").split("-")[0] not in args.exclude]
+        if len(keep) < MIN_SAMPLES:
+            sys.exit(f"{folder}: only {len(keep)} usable samples")
+        for k in keep:
+            data.append((to_rad(used[k]["ticks"], cal), i, *obs[k]))
+            runs.append(f"{folder.name}/{used[k].get('pose', 'manual').split('-')[0]}")
+        T_bt = [forward(chain, to_rad(used[k]["ticks"], cal)) @ T_gc @ T_cb[k] for k in keep]
+        R, p = mean_rotation([T[:3, :3] for T in T_bt]), np.mean([T[:3, 3] for T in T_bt], 0)
+        x0.append(pose_vector(transform(R, p)) if args.free_board else [p[0], p[1], np.arctan2(R[1, 0], R[0, 0])])
+        print(f"{folder}: {len(keep)} samples")
+    nb, ngeom = len(args.folders), sum(len(s) + len(t) for s, t in geometry_directions(chain).values())
+    x0 = np.concatenate(x0 + [np.zeros(ngeom)])
+    nbp = 6 if args.free_board else 3
+    geometry = np.arange(6 + nbp * nb, len(x0))
+
+    def free(placements, geom):
+        idx = list(range(6)) + [6 + nbp * i + k for i in placements for k in range(nbp)]
+        return np.r_[idx, geometry if geom else []].astype(int)
+
+    # Held out: fit without one run, test on it. Its board placement is fitted on the other
+    # runs there, so runs alone at their placement are skipped.
+    print("\nleave one run out, held-out RMS [px]:   CAD origins   fitted")
+    held = []
+    for run in sorted(set(runs)):
+        train = [d for d, r in zip(data, runs) if r != run]
+        test = [d for d, r in zip(data, runs) if r == run]
+        placements = sorted({d[1] for d in train})
+        if test[0][1] not in placements:
+            continue
+        line = []
+        for geom in (False, True):
+            x = kinematics_fit(chain, train, x0, free(placements, geom), nb, K, D, args.free_board)
+            line.append(rms_px(kinematics_residuals(chain, test, x, nb, K, D, args.free_board)))
+        held.append(line)
+        print(f"  {run:<36}{line[0]:6.2f}      {line[1]:6.2f}", flush=True)
+    if held:
+        cad_px, fit_px = np.mean(held, 0)
+        print(f"  {'mean':<36}{cad_px:6.2f}      {fit_px:6.2f}")
+
+    x = kinematics_fit(chain, data, x0, free(range(nb), True), nb, K, D, args.free_board)
+    print(f"\nall {len(data)} samples: {rms_px(kinematics_residuals(chain, data, x, nb, K, D, args.free_board)):.2f} px")
+    fitted = adjusted_chain(chain, x[geometry])
+    kinematics = load_kinematics()
+    for (name, cad, _), (_, o, axis) in zip(chain, fitted):
+        if name not in kinematics:
+            continue
+        moved = (o[:3, 3] - cad[:3, 3]) * 1000
+        longer = (np.linalg.norm(o[:3, 3]) - np.linalg.norm(cad[:3, 3])) * 1000
+        print(f"  {name:<14}origin moved [{moved[0]:+5.1f} {moved[1]:+5.1f} {moved[2]:+5.1f}] mm "
+              f"(link {longer:+5.1f} mm longer), axis tilted {rotation_angle(cad[:3, :3].T @ o[:3, :3]):.1f} deg")
+        kinematics[name].update(xyz=[float(v) for v in o[:3, 3]], rpy=matrix_rpy(o[:3, :3]))
+    zero = {n: 0.0 for n, _, axis in chain if axis is not None}
+    moved = (forward(fitted, zero)[:3, 3] - forward(chain, zero)[:3, 3]) * 1000
+    print(f"  gripper_link at the zero pose moved [{moved[0]:+5.1f} {moved[1]:+5.1f} {moved[2]:+5.1f}] mm in base_link")
+    T_gc = pose_matrix(x[:6])
+    p = T_gc[:3, 3] * 1000
+    print(f"  camera at [{p[0]:6.1f} {p[1]:6.1f} {p[2]:6.1f}] mm in gripper_link")
+    if not args.write:
+        print("\nreport only: --write saves the joint origins and the camera pose")
+        return
+    stamp = f"so101_hand_eye.py kinematics, {datetime.now():%Y-%m-%d %H:%M}, {len(data)} samples, {nb} board placements"
+    held_line = f"held-out runs: {cad_px:.2f} px with the CAD origins, {fit_px:.2f} px with these" if held else "no held-out check"
+    with open(KINEMATICS_FILE, "w") as f:
+        f.write(f"# {stamp}\n# {held_line}\n")
+        f.write("# Joint origins (parent link -> joint frame) that so101_new_calib.urdf reads; cad = the upstream values.\n")
+        yaml.safe_dump({"joints": kinematics}, f, sort_keys=False, default_flow_style=None)
+    print(f"saved {KINEMATICS_FILE} (without table_z: it belongs to the old origins, measure it again)")
+    save_hand_eye(args.file, T_gc, [stamp, held_line, "fitted together with the joint origins in so101_kinematics.yaml"])
 
 
 def main():
@@ -711,11 +1002,23 @@ def main():
     auto.add_argument("--torque-off", action="store_true", help="switch torque off first to set the centre pose by hand (support the arm!)")
     auto.add_argument("--poses", type=int, default=20, help="poses to visit, each from both sides (default: 20)")
     auto.add_argument("--seed", type=int, default=0, help="random seed of the pose plan")
+    auto.add_argument("--spread", type=float, default=1.0,
+                      help="scale the per-joint spread around the centre (2 for joint refinement: lift and elbow then vary apart)")
+    auto.add_argument("--side", type=float, metavar="DEG",
+                      help="no teaching: aim at the board from the earlier samples, with shoulder_pan this far off facing it")
     solve = sub.add_parser("solve")
     solve.add_argument("--refine-joints", action="store_true",
                        help="also estimate zero offsets of " + ", ".join(REFINE_JOINTS) + " (report only)")
+    kinematics = sub.add_parser("kinematics")
+    kinematics.add_argument("folders", type=Path, nargs="+", help="sample folders, one per board placement")
+    kinematics.add_argument("--exclude", nargs="+", default=[], metavar="RUN",
+                            help="runs to leave out (the timestamp of their pose names, e.g. 20261101_130751)")
+    kinematics.add_argument("--board-on-table", dest="free_board", action="store_false",
+                            help="pin each board on the table (z = BOARD_Z) instead of a free pose; worse so far (7.1 vs 2.7 px)")
+    kinematics.add_argument("--write", action="store_true",
+                            help=f"save the joint origins to {KINEMATICS_FILE.name} and the camera pose to --file")
     args = parser.parse_args()
-    {"capture": cmd_capture, "auto": cmd_auto, "solve": cmd_solve}[args.cmd](args)
+    {"capture": cmd_capture, "auto": cmd_auto, "solve": cmd_solve, "kinematics": cmd_kinematics}[args.cmd](args)
 
 
 if __name__ == "__main__":

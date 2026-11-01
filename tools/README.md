@@ -21,7 +21,7 @@ python3 tools/so101_calibrate.py zero                  # slow move to the calibr
 python3 tools/so101_calibrate.py off                   # torque off on every joint (support the arm)
 ```
 
-`zero` moves all joints together (slowest ~18°/s, 70 % torque limit). If a joint stops getting closer to its goal for 0.5 s, every joint freezes in place and the stuck joint is reported.
+`zero` moves in stages: `elbow_flex` first, then `shoulder_lift`, then the rest (~18°/s, 100 % torque limit). Lifting first with the elbow folded swings the hand down into the table. If a joint stops getting closer to its goal for 0.5 s, every joint freezes in place and the stuck joint is reported.
 
 `calibrate` steps:
 
@@ -81,14 +81,89 @@ Eye-in-hand calibration: the wrist camera pose relative to `gripper_link`. The C
 
 ```bash
 python3 tools/so101_hand_eye.py capture [--torque-off]   # by hand, torque off: SPACE saves when the arm is still
-python3 tools/so101_hand_eye.py auto [--poses 20]        # torque on: set a centre pose, the arm visits poses around it
+python3 tools/so101_hand_eye.py auto [--poses 20] [--spread 2] [--side DEG]   # torque on: the arm visits poses around a centre
 python3 tools/so101_hand_eye.py solve [--refine-joints]  # all five cv2.calibrateHandEye methods, keeps the most consistent
 ```
 
-Prefer `auto`. With torque off, gravity and the hand move the joints inside their play. On the first try the board spread was 15 mm / 3.4° by hand and 3.1 mm / 1.2° with `auto`. `auto` needs one rough `capture` + `solve` result to keep the board in view. Its poses stay inside the calibrated ranges, at least 5 cm above the table, and outside the jerk zones predicted in the day-1 devlog. Each pose is reached from both sides, and `solve` reports how far apart the servos stop (about 2°, which the encoders measure) and how much the camera sees beyond that (about 0.2°).
+Prefer `auto`. With torque off, gravity and the hand move the joints inside their play. On the first try the board spread was 15 mm / 3.4° by hand and 3.1 mm / 1.2° with `auto`. `auto` needs one rough `capture` + `solve` result to keep the board in view. Its poses stay inside the calibrated ranges, and at least 5 cm above the table. Each pose is reached from both sides, and `solve` reports how far apart the servos stop (about 2°, which the encoders measure) and how much the camera sees beyond that (about 0.2°).
+
+The board counts as visible only beside the jaws, which cover the bottom middle of every image (`JAW_POLYGON`). `--spread 2` doubles the per-joint spread around the centre. `--side DEG` skips teaching: the centre is computed from the board seen in the samples already in the folder, with `shoulder_pan` DEG away from facing it, and the arm moves there itself (via zero when the straight path is not clear). With the jaws in the way, about −25 and +20 work. There is no self-collision check: at `--side 20` the camera brushed the arm twice.
 
 `--refine-joints` fits the camera pose and the zero offsets of `shoulder_lift`, `elbow_flex` and `wrist_flex` together, on the corner reprojection error. The board is pinned to the table plane the arm stands on (z = 0, horizontal, only x, y and yaw free). With a free board pose, a shoulder error is absorbed by tilting the board. The fit is also checked on held-out poses and per run (centre pose). It only reports and does not change the joint calibration. Apply an offset only when every run agrees on it. `solve` also prints where the board sits relative to `base_link`; on the table it should be at ~0 mm and ~0°.
 
 Result on 2026-10-28 (114 samples from 3 runs): the `shoulder_lift` zero was off by +10.5° and is now corrected in the calibration file (2048 → 1929). After that, the board spread is 4.7 mm / 0.71° and the camera sits at (−1.2, 69.5, −5.1) mm in `gripper_link`. Recalibrating `shoulder_lift` with `so101_calibrate.py` would undo this correction. See [devlog day 3](../docs/devlog/2026-10-28-day-3.md).
 
+### Kinematic calibration
+
+```bash
+python3 tools/so101_hand_eye.py kinematics ~/so101_data/hand_eye ~/so101_data/hand_eye_wide ~/so101_data/hand_eye_s3 \
+    --exclude 20261101_130751 [--write]
+```
+
+This fits the printed arm's geometry together with the camera pose, using all the samples. Each folder is one board placement and gets its own free board pose. The fit starts from the upstream CAD joint origins and estimates three things:
+
+- **Origin shift:** `wrist_flex` moves across the forearm (in the plane perpendicular to its axis). An `elbow_flex` shift did not help: 7.8 px held out with it, 7.6 px without.
+- **Axis tilts:** the `shoulder_lift`, `elbow_flex` and `wrist_flex` axes tilt.
+  - The `shoulder_lift` tilt about the `shoulder_pan` axis is left out. It acts as a pan zero offset, which the board yaw absorbs. Left free, it drifted to 5° and moved the gripper 22 mm sideways at zero.
+- **Zero offsets:** not fitted. With the geometry free they came out within 1° and did not change the held-out error.
+
+The fit is checked by leaving out one run at a time. `--write` saves the joint origins to [`so101_description/config/so101_kinematics.yaml`](../so101_description/config/so101_kinematics.yaml) and the camera pose to the hand-eye YAML.
+
+The URDF reads those origins through xacro. These tools read them too, so RViz, MoveIt and the tools all use the same model. The file also keeps the upstream values as `cad`.
+
+**Wrist play, and the table height (2026-11-01 evening).** Hidden play changes where the hand is without the encoders seeing it. Two measurements show it:
+
+- **Push test:** at zero, the hand could be lifted 2–3 cm by hand, while the encoders saw about 1 cm. The user saw it at `wrist_flex`.
+- **Table test:** the hand was rested on the table with torque off (12 poses), then each pose was revisited with torque on and `shoulder_lift` 6° up, and the gap under the hand was measured with a ruler.
+  - The gap was 10–36 mm smaller than the encoders said. The difference grew with reach.
+  - Torque off with the hand on the table, or pushing against it, takes the play up the other way. So such poses (and the touch tests) cannot calibrate the arm.
+  - With torque on and the arm carrying its own weight, the model error was the same at every pose (±1.3 mm).
+
+Tightening the `wrist_flex` screws took the camera fit from 6.4 px to 2.7 px over all samples. So the geometry was refitted on fresh data only: `~/so101_data/hand_eye_s4`, 2 runs.
+
+- The held-out error went from 9.9 px with the CAD origins to 4.8 px.
+- `wrist_flex` sits 11 mm farther along the forearm than in CAD.
+
+The camera cannot see the table height, because the board pose is free. Pinning the board to the table instead raised the error to 7.1 px.
+
+The table height therefore comes from the ruler gaps instead: `table_z` in the kinematics file, 12.5 ± 1.2 mm below the bottom of the base meshes. With it, the model matches the ruler gaps within 1.1 mm RMS. `so101_table_touch.py` uses `table_z`.
+
+A new `kinematics --write` drops `table_z`, because it belongs to the old origins. Measure it again after every fit.
+
+**Earlier result on 2026-11-01** (before tightening; 265 samples, 3 board placements):
+
+- The held-out error went from 10.6 px with the CAD origins to 7.6 px. Every run improved.
+- Earlier test: the geometry was fitted on the old placements only, then tested on a new one. The error went from 16.5 px to 9.2 px.
+- `wrist_flex` sits 7.0 mm farther along the forearm than in CAD, and 3.8 mm off sideways. The axes tilt 0.5–0.8°.
+- Run `20261101_130751` is excluded: the camera brushed the arm there, and its error was 21–27 px with any model.
+- **Check without the camera:** the gaps to the table seen in the `--hover-mm` test were 10, 12, 20, 10 and 13 mm. The model predicts them with 5.1 mm RMS error, against 5.9 mm with the CAD origins.
+- **What the shift means:** the meshes are rigid CAD parts, so in RViz the wrist meshes now overlap the forearm. The real parts do not overlap. The 7 mm is an effective correction for where the wrist turns as seen from the camera; it is not a measured part length.
+
+The board still comes out 13–24 mm below `base_link`, with the CAD origins as well as with the fitted ones.
+
 `solve` checks every method by where it puts the (fixed) board in `base_link`; the spread across samples is the quality measure. Samples (`~/so101_data/hand_eye/`) store raw ticks and images, so `solve` can be rerun after a joint or camera recalibration. Result: [`so101_perception/config/wrist_camera_hand_eye.yaml`](../so101_perception/config/wrist_camera_hand_eye.yaml), `gripper_link` → `wrist_camera_optical_frame` (OpenCV optical frame of the upright image).
+
+## `so101_wrap_test.py`
+
+Diagnostic for the day-1 "jerk into the stops" problem. It sweeps one joint slowly at low torque across the point where its raw encoder wraps (`present + homing_offset` passes 4095 → 0), while the other joints hold. The joint goes limp as soon as it lags its goal or moves against the sweep. `--hold` only switches torque on where the joint is (the folded rest pose) and watches it for 3 s.
+
+```bash
+python3 tools/so101_wrap_test.py                                   # shoulder_pan 0 -> -20 deg at 30 %
+python3 tools/so101_wrap_test.py --joint elbow_flex --start 91 --target 75
+python3 tools/so101_wrap_test.py --joint shoulder_lift --hold --torque 20
+```
+
+Result on 2026-10-29: `shoulder_pan` and `elbow_flex` crossed their wrap points both ways (max lag 0.8° and 1.6°, ≤ 110 mA, no status bits), and `elbow_flex` held still while outside its servo position limits. The encoder-wrap theory is rejected. The stall seen with `zero` was the folded hand hitting the table, now fixed by the stage order. Logs: `~/so101_data/wrap_test/`.
+
+## `so101_table_touch.py`
+
+Joint-zero calibration without a camera, **which did not work**; its `--hover-mm` mode is kept as a check of the model. Torque on, the arm visits poses just above the table and lowers the hand with `elbow_flex` (3°/s, 60 % torque, `--torque`) until the joint stops following its goal. At each touch the lowest point of the hand meshes must lie on the table (the lowest point of the base meshes, since the base stands on it), and `fit` solves the `shoulder_lift`, `elbow_flex` and `wrist_flex` zero offsets from that.
+
+```bash
+python3 tools/so101_table_touch.py probe --dry-run               # plan and print the poses, no bus
+python3 tools/so101_table_touch.py probe --poses 20 [--torque 30]
+python3 tools/so101_table_touch.py fit [--free-table]
+python3 tools/so101_table_touch.py probe --poses 5 --hover-mm 15  # stop 15 mm above the table (model), type the gap you see
+```
+
+On synthetic touches (0.15° joint noise), `fit` recovers known offsets within 0.2°. On the real arm (2026-10-29 and 11-01) the model put the hand 20–50 mm below the table at every touch, and the fit asked for a `shoulder_lift` change of −14 to −17°. The hover check on the same poses disagreed: the model said 13–20 mm, the gap was 10–20 mm by eye. The contact is soft (something past the encoders yields, likely the clamped base or the printed parts), so the elbow turns about 20° on after the hand reaches the table. The lag rises too slowly for the detector, which compares against the last second. `wrist_flex` descents were not detected at all and are off (`DESCENT_JOINTS`). Data: `~/so101_data/table_touch/`.

@@ -3,8 +3,10 @@
 <!-- Onshape https://cad.onshape.com/documents/7715cc284bb430fe6dab4ffd/w/4fd0791b683777b02f8d975a/e/826c553ede3b7592eb9ca800 -->
 <!-- Vendored from TheRobotStudio/SO-ARM100 @ a758567c3978dfeefe282ede0500085a48fe8f78,
      Simulation/SO101/so101_new_calib.urdf (Apache-2.0). Modification: mesh paths changed from
-     assets/<file>.stl to package://so101_description/meshes/<file>.stl. See ../ATTRIBUTION.md. -->
-<robot name="so101_new_calib">
+     assets/<file>.stl to package://so101_description/meshes/<file>.stl; the shoulder_lift, elbow_flex
+     and wrist_flex origins come from ../config/so101_kinematics.yaml (calibrated_origin, defined in
+     so101.urdf.xacro), which keeps the upstream values as `cad`. See ../ATTRIBUTION.md. -->
+<robot name="so101_new_calib" xmlns:xacro="http://www.ros.org/wiki/xacro">
 
   <!-- Materials -->
   <material name="3d_printed">
@@ -374,7 +376,7 @@
 
   <!-- Joint from lower_arm to wrist -->
   <joint name="wrist_flex" type="revolute">
-    <origin xyz="-0.1349 0.0052 3.62355e-17" rpy="4.02456e-15 8.67362e-16 -1.5708"/>
+    <xacro:calibrated_origin joint="wrist_flex"/>
     <parent link="lower_arm_link"/>
     <child link="wrist_link"/>
     <axis xyz="0 0 1"/>
@@ -395,7 +397,7 @@
   <!-- Joint from upper_arm to lower_arm -->
   <!-- Note: 5-degree calibration offset applied to joint limits -->
   <joint name="elbow_flex" type="revolute">
-    <origin xyz="-0.11257 -0.028 1.73763e-16" rpy="-3.63608e-16 8.74301e-16 1.5708"/>
+    <xacro:calibrated_origin joint="elbow_flex"/>
     <parent link="upper_arm_link"/>
     <child link="lower_arm_link"/>
     <axis xyz="0 0 1"/>
@@ -415,7 +417,7 @@
 
   <!-- Joint from shoulder to upper_arm -->
   <joint name="shoulder_lift" type="revolute">
-    <origin xyz="-0.0303992 -0.0182778 -0.0542" rpy="-1.5708 -1.5708 0"/>
+    <xacro:calibrated_origin joint="shoulder_lift"/>
     <parent link="shoulder_link"/>
     <child link="upper_arm_link"/>
     <axis xyz="0 0 1"/>

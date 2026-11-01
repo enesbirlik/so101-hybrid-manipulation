@@ -17,8 +17,9 @@ The robot description in this package is derived from **SO-ARM100** by TheRobotS
 
 ## Modifications (Apache-2.0 §4(b))
 
-- `urdf/so101_new_calib.urdf`: mesh paths changed from `assets/<file>.stl` to `package://so101_description/meshes/<file>.stl`; a header comment states the source and the change. Kinematics, inertias, and limits are unchanged.
+- `urdf/so101_new_calib.urdf`: mesh paths changed from `assets/<file>.stl` to `package://so101_description/meshes/<file>.stl`; a header comment states the source and the changes. The `shoulder_lift`, `elbow_flex` and `wrist_flex` joint origins are read from `config/so101_kinematics.yaml` (calibrated on our arm; the upstream values are kept there as `cad`), so the file declares the xacro namespace and is only valid through `so101.urdf.xacro`. Inertias and limits are unchanged.
 - `urdf/wrist_camera.xacro`: the `wrist_camera_mount_link`, `wrist_camera_link`, `wrist_camera_mount_joint`, and `wrist_camera_joint` elements were extracted from `so101_new_calib_camera.urdf` and wrapped in a xacro file so they can be toggled with the `use_wrist_camera` argument. Mesh paths were changed as above.
-- `urdf/so101.urdf.xacro`: new file (not from upstream) that combines the two.
+- `urdf/so101.urdf.xacro`: new file (not from upstream) that combines the two and defines `calibrated_origin`.
+- `config/so101_kinematics.yaml`: new file (not from upstream), written by `tools/so101_hand_eye.py kinematics`.
 
 <!-- Keep this list up to date whenever a vendored file is edited. -->

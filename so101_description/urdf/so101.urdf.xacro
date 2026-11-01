@@ -2,6 +2,14 @@
 <!-- Entry point: the vendored SO-101 arm, optionally with the wrist camera. -->
 <robot name="so101" xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:arg name="use_wrist_camera" default="true"/>
+  <xacro:arg name="kinematics" default="$(find so101_description)/config/so101_kinematics.yaml"/>
+
+  <!-- Calibrated joint origins (tools/so101_hand_eye.py kinematics), used by so101_new_calib.urdf. -->
+  <xacro:property name="kinematics" value="${xacro.load_yaml('$(arg kinematics)')['joints']}"/>
+  <xacro:macro name="calibrated_origin" params="joint">
+    <xacro:property name="o" value="${kinematics[joint]}"/>
+    <origin xyz="${o['xyz'][0]} ${o['xyz'][1]} ${o['xyz'][2]}" rpy="${o['rpy'][0]} ${o['rpy'][1]} ${o['rpy'][2]}"/>
+  </xacro:macro>
 
   <xacro:include filename="$(find so101_description)/urdf/so101_new_calib.urdf"/>
 

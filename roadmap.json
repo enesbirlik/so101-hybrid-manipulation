@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-27",
+  "updated": "2026-11-01",
   "steps": [
     {
       "id": "parts-bom-print",
@@ -24,7 +24,8 @@
         "tr": "Kalibrasyon, URDF eşleştirme, fisheye kamera kalibrasyonu",
         "en": "Calibration, URDF matching, fisheye camera calibration"
       },
-      "status": "active"
+      "status": "done",
+      "date": "2026-11-01"
     },
     {
       "id": "ros2-control-moveit",
@@ -32,7 +33,7 @@
         "tr": "C++ ros2_control arayüzü + MoveIt 2",
         "en": "C++ ros2_control interface + MoveIt 2"
       },
-      "status": "todo"
+      "status": "active"
     },
     {
       "id": "perception-pick-place",
