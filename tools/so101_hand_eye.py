@@ -1013,8 +1013,8 @@ def main():
     kinematics.add_argument("folders", type=Path, nargs="+", help="sample folders, one per board placement")
     kinematics.add_argument("--exclude", nargs="+", default=[], metavar="RUN",
                             help="runs to leave out (the timestamp of their pose names, e.g. 20261101_130751)")
-    kinematics.add_argument("--free-board", action="store_true",
-                            help="free board pose per placement instead of lying on the table (z = BOARD_Z)")
+    kinematics.add_argument("--board-on-table", dest="free_board", action="store_false",
+                            help="pin each board on the table (z = BOARD_Z) instead of a free pose; worse so far (7.1 vs 2.7 px)")
     kinematics.add_argument("--write", action="store_true",
                             help=f"save the joint origins to {KINEMATICS_FILE.name} and the camera pose to --file")
     args = parser.parse_args()
