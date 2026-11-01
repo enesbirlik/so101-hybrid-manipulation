@@ -48,8 +48,8 @@ from scipy.optimize import least_squares
 import feetech_bus as fb
 from feetech_bus import FeetechBus, FeetechError
 import so101_camera_calib as cam
-from so101_calibrate import DEFAULT_FILE as JOINT_FILE, JOINTS, TICKS_PER_DEG, Abort, hold_all, load_calibration, \
-    move_joints, to_deg
+from so101_calibrate import DEFAULT_FILE as JOINT_FILE, JOINTS, TICKS_PER_DEG, Abort, go_to_zero, hold_all, \
+    load_calibration, move_joints, to_deg
 
 REPO = Path(__file__).resolve().parents[1]
 URDF = REPO / "so101_description" / "urdf" / "so101_new_calib.urdf"
@@ -72,6 +72,11 @@ RANGE_MARGIN_DEG = 5.0   # stay this far inside the calibrated range
 MIN_HEIGHT = 0.05        # m; gripper_link and gripper_frame_link stay this high above base_link
 SETTLE_S = 1.0           # wait after arriving, before the still check and the frame
 MIN_VISIBLE = 0.7        # predicted share of board corners inside the image
+# The jaws cover this part of every upright image (measured on 13 frames, 20 px margin).
+JAW_POLYGON = np.array([[510, 410], [600, 410], [1050, 720], [210, 720]], np.float32)
+SIDE_DISTANCE = 0.25     # m; auto --side: the computed centre sees the board centre from about this far
+SIDE_AIM_PX = (640, 230) # ... at this pixel, above the jaws
+PATH_STEPS = 20          # checks along the straight joint path to the computed centre
 # solve --refine-joints: zero offsets that can be told apart from the camera and board
 # poses. Pan and roll offsets cannot: they just turn the board (about the vertical) or the camera.
 REFINE_JOINTS = ["shoulder_lift", "elbow_flex", "wrist_flex"]
@@ -203,7 +208,7 @@ def load_hand_eye(path):
 
 
 def board_visible(T_cb, board_points, K, D, margin=30):
-    """Share of board corners a camera at T_cb (camera -> board) would see."""
+    """Share of board corners a camera at T_cb (camera -> board) would see, beside the jaws."""
     pts = board_points @ T_cb[:3, :3].T + T_cb[:3, 3]
     if (pts[:, 2] < 0.05).any():
         return 0.0
@@ -211,7 +216,8 @@ def board_visible(T_cb, board_points, K, D, margin=30):
                                      np.ascontiguousarray(T_cb[:3, 3]).reshape(3, 1), K, D)
     p = p.reshape(-1, 2)
     inside = (p[:, 0] > margin) & (p[:, 0] < cam.WIDTH - margin) & (p[:, 1] > margin) & (p[:, 1] < cam.HEIGHT - margin)
-    return float(inside.mean())
+    jaw = np.array([cv2.pointPolygonTest(JAW_POLYGON, (float(x), float(y)), False) >= 0 for x, y in p])
+    return float((inside & ~jaw).mean())
 
 
 def board_pose(corners, ids, board_points, K, D):
@@ -339,13 +345,13 @@ def pose_problem(q_deg, cal, chains):
     return None
 
 
-def plan_poses(centre, count, rng, allowed):
+def plan_poses(centre, count, rng, allowed, spread=1.0):
     """Random poses around centre that pass allowed() together with both approach poses, in a short visiting order."""
     poses = []
-    for _ in range(5000):
+    for _ in range(int(5000 * spread ** 3)):
         if len(poses) == count:
             break
-        q = {n: v + rng.uniform(-AUTO_SPREAD_DEG[n], AUTO_SPREAD_DEG[n]) for n, v in centre.items()}
+        q = {n: v + spread * rng.uniform(-AUTO_SPREAD_DEG[n], AUTO_SPREAD_DEG[n]) for n, v in centre.items()}
         if all(allowed({n: v + s * APPROACH_DEG for n, v in q.items()}) for s in (0, 1, -1)):
             poses.append(q)
     ordered, current = [], centre
@@ -390,6 +396,60 @@ def teach_centre(bus, cap, cal, names, chains, board, dictionary, board_points, 
             return q, T_cb
 
 
+def board_from_samples(folder, cal, chain, T_gc, board, dictionary, board_points, K, D):
+    """Board pose in base_link from the samples already in folder, or None. Good to a few
+    mm and degrees, enough to aim the camera at it."""
+    T = []
+    for s in load_samples(folder):
+        gray = cv2.imread(str(folder / s["image"]), cv2.IMREAD_GRAYSCALE)
+        corners, ids = cam.detect(gray, board, dictionary) if gray is not None else (None, None)
+        if ids is not None and len(ids) >= MIN_CORNERS:
+            T_cb = board_pose(corners, ids, board_points, K, D)[0]
+            T.append(forward(chain, to_rad(s["ticks"], cal)) @ T_gc @ T_cb)
+    if not T:
+        return None
+    return transform(mean_rotation([t[:3, :3] for t in T]), np.median([t[:3, 3] for t in T], 0))
+
+
+def side_centre(T_bt, side_deg, cal, chain, T_gc, board_points, K, D, allowed, rng):
+    """Centre pose [deg] with shoulder_pan side_deg away from facing the board, whose camera
+    sees the board centre at SIDE_AIM_PX from about SIDE_DISTANCE, or None. Seen from the side,
+    the board cannot absorb a shoulder_lift / elbow_flex trade-off as a shift along the arm."""
+    target = T_bt[:3, :3] @ board_points.mean(0) + T_bt[:3, 3]
+    aim = np.r_[cv2.fisheye.undistortPoints(np.array([[SIDE_AIM_PX]], np.float64), K, D).ravel(), 1.0]
+    aim /= np.linalg.norm(aim)
+    names = [n for n, _, axis in chain if axis is not None]
+    limits = {n: sorted((to_deg(cal[n]["range_min"], cal[n]), to_deg(cal[n]["range_max"], cal[n]))) for n in names}
+
+    def azimuth(q):
+        p = forward(chain, {n: np.radians(v) for n, v in q.items()})[:3, 3]
+        return np.arctan2(p[1], p[0])
+    rest = {n: 0.0 for n in names}
+    facing = min(np.arange(-90.0, 90.5, 0.5), key=lambda pan: abs(np.angle(np.exp(1j * (
+        azimuth({**rest, "shoulder_pan": pan}) - np.arctan2(target[1], target[0]))))))
+    pan = facing + side_deg
+    candidates = []
+    for _ in range(20000):
+        q = {n: rng.uniform(lo + RANGE_MARGIN_DEG, hi - RANGE_MARGIN_DEG) for n, (lo, hi) in limits.items()}
+        q["shoulder_pan"] = pan
+        T_bc = forward(chain, {n: np.radians(v) for n, v in q.items()}) @ T_gc
+        v = np.linalg.inv(T_bc)[:3, :3] @ target + np.linalg.inv(T_bc)[:3, 3]   # board centre, camera frame
+        dist = np.linalg.norm(v)
+        off_axis = np.degrees(np.arccos(np.clip(v @ aim / dist, -1, 1)))
+        if off_axis < 15:   # a small roll keeps the camera cable slack
+            candidates.append((off_axis / 15 + abs(dist - SIDE_DISTANCE) / 0.05 + abs(q["wrist_roll"]) / 90, q))
+    for _, q in sorted(candidates, key=lambda c: c[0]):
+        if allowed(q):
+            return q
+    return None
+
+
+def path_clear(start, end, cal, chains):
+    """The straight joint path between two poses [deg] stays allowed (ranges, table)."""
+    return all(not pose_problem({n: start[n] + s * (end[n] - start[n]) for n in end}, cal, chains)
+               for s in np.linspace(0, 1, PATH_STEPS))
+
+
 def grab_still(bus, cap, cal, names):
     """Frame and joint ticks after settling; the frame is None if a joint still moved."""
     time.sleep(SETTLE_S)
@@ -422,25 +482,64 @@ def cmd_auto(args):
         cv2.namedWindow("hand-eye", cv2.WINDOW_NORMAL)
         started = False   # torque switched on, the arm moves
         try:
-            taught = teach_centre(bus, cap, cal, names, chains, board, dictionary, board_points, K, D)
-            if taught is None:
-                return
-            centre, T_cb0 = taught
-            T_bt = forward(chain, {n: np.radians(v) for n, v in centre.items()}) @ T_gc @ T_cb0
-
             def allowed(q):
                 if pose_problem(q, cal, chains):
                     return False
                 T_bg = forward(chain, {n: np.radians(v) for n, v in q.items()})
                 return board_visible(np.linalg.inv(T_bg @ T_gc) @ T_bt, board_points, K, D) >= MIN_VISIBLE
 
-            poses = plan_poses(centre, args.poses, np.random.default_rng(args.seed), allowed)
+            if args.side is None:
+                taught = teach_centre(bus, cap, cal, names, chains, board, dictionary, board_points, K, D)
+                if taught is None:
+                    return
+                centre, T_cb0 = taught
+            else:
+                # Aim at the board seen in the earlier runs, then measure it again from the centre.
+                T_bt = board_from_samples(args.samples, cal, chain, T_gc, board, dictionary, board_points, K, D)
+                if T_bt is None:
+                    sys.exit(f"--side aims at the board seen in {args.samples}: run one auto with a taught centre first")
+                centre = side_centre(T_bt, args.side, cal, chain, T_gc, board_points, K, D, allowed,
+                                     np.random.default_rng(args.seed))
+                if centre is None:
+                    sys.exit(f"no allowed pose sees the board with shoulder_pan {args.side:+.0f} deg off it: try a smaller --side")
+                print("computed centre: " + "  ".join(f"{n.split('_')[1]} {v:+.1f}" for n, v in centre.items()))
+                print("The board must still lie where it was in the earlier runs.")
+                # Draw the window once: left blank while input() blocks, it shows stale screen content.
+                wait = np.zeros((cam.HEIGHT, cam.WIDTH, 3), np.uint8)
+                cv2.putText(wait, "waiting for Enter in the terminal", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
+                            (255, 255, 255), 2)
+                cv2.imshow("hand-eye", wait)
+                cv2.waitKey(1)
+                input("Enter switches torque on and moves there ")
+                hold_all(bus, joints)
+                started = True
+                here = {n: to_deg(bus.read_position(cal[n]["id"]), cal[n]) for n in names}
+                if not path_clear(here, centre, cal, chains):
+                    print("  via the zero pose (elbow first)")
+                    if go_to_zero(bus, cal, joints):
+                        raise Abort("stuck on the way to zero")
+                    if not path_clear({n: 0.0 for n in names}, centre, cal, chains):
+                        raise Abort("no clear straight path from zero to the centre")
+                stuck = move_joints(bus, cal, joints, to_ticks(centre, cal))
+                if stuck:
+                    raise Abort(f"stuck: {', '.join(stuck)}")
+                frame, ticks = grab_still(bus, cap, cal, names)
+                corners, ids = cam.detect(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), board, dictionary) \
+                    if frame is not None else (None, None)
+                if ids is None or len(ids) < MIN_CORNERS:
+                    raise Abort(f"the board is not in view from the computed centre "
+                                f"({'still moving' if frame is None else f'{0 if ids is None else len(ids)} corners'})")
+                centre = {n: to_deg(t, cal[n]) for n, t in ticks.items()}
+                T_cb0 = board_pose(corners, ids, board_points, K, D)[0]
+            T_bt = forward(chain, {n: np.radians(v) for n, v in centre.items()}) @ T_gc @ T_cb0
+
+            poses = plan_poses(centre, args.poses, np.random.default_rng(args.seed), allowed, args.spread)
             if not poses:
                 sys.exit("no allowed pose around this centre: pick one further from the joint limits and the table")
             print(f"{len(poses)} poses, each reached from both sides: {2 * len(poses)} samples, "
                   f"about {len(poses) * 12 // 60 + 1} min.")
             print("The arm moves on its own. Stay next to it: q in the window or Ctrl+C freezes it in place.")
-            input("Enter switches torque on and starts ")
+            input("Enter starts " if started else "Enter switches torque on and starts ")
             hold_all(bus, joints)
             started = True
             for k, q in enumerate(poses, 1):
@@ -588,6 +687,11 @@ def refine_report(chain, cal, used, obs, T_gc, T_bg, T_cb, K, D):
         print(f"    {n:<14}{np.degrees(offsets[n]):+6.2f} deg (+-{np.degrees(sd_n):.2f})   zero {c['zero']} -> {new_zero}")
     p = pose_matrix(fit.x[:6])[:3, 3] * 1000
     print(f"    camera at [{p[0]:6.1f} {p[1]:6.1f} {p[2]:6.1f}] mm with these offsets")
+    # Strongly correlated offsets trade off against each other: the data cannot tell them apart.
+    cov =np.linalg.pinv(fit.jac.T @ fit.jac)[9:, 9:]
+    corr = cov / np.sqrt(np.outer(np.diag(cov), np.diag(cov)))
+    print("    correlation " + "  ".join(f"{REFINE_JOINTS[a].split('_')[0]}/{REFINE_JOINTS[b].split('_')[0]} {corr[a, b]:+.2f}"
+                                      for a in range(len(REFINE_JOINTS)) for b in range(a + 1, len(REFINE_JOINTS))))
 
     # Held out: fit on every other pose, test on the rest. Both sides of an auto pose stay together.
     groups = sorted({s.get("pose", s["image"]) for s in used})
@@ -701,6 +805,10 @@ def main():
     auto.add_argument("--torque-off", action="store_true", help="switch torque off first to set the centre pose by hand (support the arm!)")
     auto.add_argument("--poses", type=int, default=20, help="poses to visit, each from both sides (default: 20)")
     auto.add_argument("--seed", type=int, default=0, help="random seed of the pose plan")
+    auto.add_argument("--spread", type=float, default=1.0,
+                      help="scale the per-joint spread around the centre (2 for joint refinement: lift and elbow then vary apart)")
+    auto.add_argument("--side", type=float, metavar="DEG",
+                      help="no teaching: aim at the board from the earlier samples, with shoulder_pan this far off facing it")
     solve = sub.add_parser("solve")
     solve.add_argument("--refine-joints", action="store_true",
                        help="also estimate zero offsets of " + ", ".join(REFINE_JOINTS) + " (report only)")
