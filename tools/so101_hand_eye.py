@@ -159,6 +159,12 @@ def load_kinematics(path=KINEMATICS_FILE):
         return yaml.safe_load(f)["joints"]
 
 
+def load_table_z(path=KINEMATICS_FILE):
+    """The table surface in base_link [m] for the calibrated origins, or None if not measured."""
+    with open(path) as f:
+        return yaml.safe_load(f).get("table_z")
+
+
 def load_chain(path, base, tool, cad=False):
     """Joints from base to tool as (name, fixed origin, axis or None for fixed joints).
 
@@ -871,13 +877,15 @@ def adjusted_chain(chain, geometry):
     return out
 
 
-def kinematics_residuals(chain, data, x, nboards, K, D):
-    """Corner reprojection [px] for x = camera pose (6), one free board pose per placement (6 each), geometry.
+def kinematics_residuals(chain, data, x, nboards, K, D, free_board=False):
+    """Corner reprojection [px] for x = camera pose (6), one board pose per placement, geometry.
 
+    The board lies on the table (x, y, yaw each), or with free_board anywhere (6 each).
     data: (joint angles, placement, board points, corners [px]) per sample."""
+    nb = 6 if free_board else 3
     T_cg = np.linalg.inv(pose_matrix(x[:6]))
-    T_bt = [pose_matrix(x[6 + 6 * i:12 + 6 * i]) for i in range(nboards)]
-    ch = adjusted_chain(chain, x[6 + 6 * nboards:])
+    T_bt = [(pose_matrix if free_board else board_on_table)(x[6 + nb * i:6 + nb * (i + 1)]) for i in range(nboards)]
+    ch = adjusted_chain(chain, x[6 + nb * nboards:])
     out = []
     for q, i, obj, img in data:
         T_cb = T_cg @ np.linalg.inv(forward(ch, q)) @ T_bt[i]
@@ -887,12 +895,12 @@ def kinematics_residuals(chain, data, x, nboards, K, D):
     return np.concatenate(out)
 
 
-def kinematics_fit(chain, data, x0, free, nboards, K, D):
+def kinematics_fit(chain, data, x0, free, nboards, K, D, free_board=False):
     """x0 with the `free` parameters fitted."""
     def residuals(z):
         x = x0.copy()
         x[free] = z
-        return kinematics_residuals(chain, data, x, nboards, K, D)
+        return kinematics_residuals(chain, data, x, nboards, K, D, free_board)
     x = x0.copy()
     x[free] = least_squares(residuals, x0[free], loss="huber", f_scale=3.0, x_scale="jac").x
     return x
@@ -915,14 +923,16 @@ def cmd_kinematics(args):
             data.append((to_rad(used[k]["ticks"], cal), i, *obs[k]))
             runs.append(f"{folder.name}/{used[k].get('pose', 'manual').split('-')[0]}")
         T_bt = [forward(chain, to_rad(used[k]["ticks"], cal)) @ T_gc @ T_cb[k] for k in keep]
-        x0.append(pose_vector(transform(mean_rotation([T[:3, :3] for T in T_bt]), np.mean([T[:3, 3] for T in T_bt], 0))))
+        R, p = mean_rotation([T[:3, :3] for T in T_bt]), np.mean([T[:3, 3] for T in T_bt], 0)
+        x0.append(pose_vector(transform(R, p)) if args.free_board else [p[0], p[1], np.arctan2(R[1, 0], R[0, 0])])
         print(f"{folder}: {len(keep)} samples")
     nb, ngeom = len(args.folders), sum(len(s) + len(t) for s, t in geometry_directions(chain).values())
     x0 = np.concatenate(x0 + [np.zeros(ngeom)])
-    geometry = np.arange(6 + 6 * nb, len(x0))
+    nbp = 6 if args.free_board else 3
+    geometry = np.arange(6 + nbp * nb, len(x0))
 
     def free(placements, geom):
-        idx = list(range(6)) + [6 + 6 * i + k for i in placements for k in range(6)]
+        idx = list(range(6)) + [6 + nbp * i + k for i in placements for k in range(nbp)]
         return np.r_[idx, geometry if geom else []].astype(int)
 
     # Held out: fit without one run, test on it. Its board placement is fitted on the other
@@ -937,16 +947,16 @@ def cmd_kinematics(args):
             continue
         line = []
         for geom in (False, True):
-            x = kinematics_fit(chain, train, x0, free(placements, geom), nb, K, D)
-            line.append(rms_px(kinematics_residuals(chain, test, x, nb, K, D)))
+            x = kinematics_fit(chain, train, x0, free(placements, geom), nb, K, D, args.free_board)
+            line.append(rms_px(kinematics_residuals(chain, test, x, nb, K, D, args.free_board)))
         held.append(line)
         print(f"  {run:<36}{line[0]:6.2f}      {line[1]:6.2f}", flush=True)
     if held:
         cad_px, fit_px = np.mean(held, 0)
         print(f"  {'mean':<36}{cad_px:6.2f}      {fit_px:6.2f}")
 
-    x = kinematics_fit(chain, data, x0, free(range(nb), True), nb, K, D)
-    print(f"\nall {len(data)} samples: {rms_px(kinematics_residuals(chain, data, x, nb, K, D)):.2f} px")
+    x = kinematics_fit(chain, data, x0, free(range(nb), True), nb, K, D, args.free_board)
+    print(f"\nall {len(data)} samples: {rms_px(kinematics_residuals(chain, data, x, nb, K, D, args.free_board)):.2f} px")
     fitted = adjusted_chain(chain, x[geometry])
     kinematics = load_kinematics()
     for (name, cad, _), (_, o, axis) in zip(chain, fitted):
@@ -972,7 +982,7 @@ def cmd_kinematics(args):
         f.write(f"# {stamp}\n# {held_line}\n")
         f.write("# Joint origins (parent link -> joint frame) that so101_new_calib.urdf reads; cad = the upstream values.\n")
         yaml.safe_dump({"joints": kinematics}, f, sort_keys=False, default_flow_style=None)
-    print(f"saved {KINEMATICS_FILE}")
+    print(f"saved {KINEMATICS_FILE} (without table_z: it belongs to the old origins, measure it again)")
     save_hand_eye(args.file, T_gc, [stamp, held_line, "fitted together with the joint origins in so101_kinematics.yaml"])
 
 
@@ -1003,6 +1013,8 @@ def main():
     kinematics.add_argument("folders", type=Path, nargs="+", help="sample folders, one per board placement")
     kinematics.add_argument("--exclude", nargs="+", default=[], metavar="RUN",
                             help="runs to leave out (the timestamp of their pose names, e.g. 20261101_130751)")
+    kinematics.add_argument("--free-board", action="store_true",
+                            help="free board pose per placement instead of lying on the table (z = BOARD_Z)")
     kinematics.add_argument("--write", action="store_true",
                             help=f"save the joint origins to {KINEMATICS_FILE.name} and the camera pose to --file")
     args = parser.parse_args()

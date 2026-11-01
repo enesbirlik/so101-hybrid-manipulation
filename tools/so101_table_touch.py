@@ -94,12 +94,14 @@ def link_hull(urdf, link):
 
 class Model:
     def __init__(self, table_mm=0.0):
-        """table_mm: table height relative to the lowest point of the base (negative: below)."""
+        """table_mm: table height relative to table_z in the kinematics file, or else to the
+        lowest point of the base meshes (negative: below)."""
         gripper = he.load_chain(he.URDF, he.BASE, "gripper_link")
         self.links = [(l, he.load_chain(he.URDF, he.BASE, l), link_hull(he.URDF, l)) for l in URDF_LINKS]
         self.links += [(l, gripper + he.load_chain(he.CAMERA_XACRO, "${parent}", l), link_hull(he.CAMERA_XACRO, l))
                        for l in CAMERA_LINKS]
-        self.table_z = link_hull(he.URDF, "base_link")[:, 2].min() + table_mm / 1000
+        table_z = he.load_table_z()
+        self.table_z = (link_hull(he.URDF, "base_link")[:, 2].min() if table_z is None else table_z) + table_mm / 1000
 
     def lowest(self, q_deg):
         """(link, height above the table [m], point in base_link) of the lowest point."""

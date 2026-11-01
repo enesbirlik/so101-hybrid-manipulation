@@ -111,7 +111,26 @@ The fit is checked by leaving out one run at a time. `--write` saves the joint o
 
 The URDF reads those origins through xacro. These tools read them too, so RViz, MoveIt and the tools all use the same model. The file also keeps the upstream values as `cad`.
 
-**Result on 2026-11-01** (265 samples, 3 board placements):
+**Wrist play, and the table height (2026-11-01 evening).** Hidden play changes where the hand is without the encoders seeing it. Two measurements show it:
+
+- **Push test:** at zero, the hand could be lifted 2–3 cm by hand, while the encoders saw about 1 cm. The user saw it at `wrist_flex`.
+- **Table test:** the hand was rested on the table with torque off (12 poses), then each pose was revisited with torque on and `shoulder_lift` 6° up, and the gap under the hand was measured with a ruler.
+  - The gap was 10–36 mm smaller than the encoders said. The difference grew with reach.
+  - Torque off with the hand on the table, or pushing against it, takes the play up the other way. So such poses (and the touch tests) cannot calibrate the arm.
+  - With torque on and the arm carrying its own weight, the model error was the same at every pose (±1.3 mm).
+
+Tightening the `wrist_flex` screws took the camera fit from 6.4 px to 2.7 px over all samples. So the geometry was refitted on fresh data only: `~/so101_data/hand_eye_s4`, 2 runs.
+
+- The held-out error went from 9.9 px with the CAD origins to 4.8 px.
+- `wrist_flex` sits 11 mm farther along the forearm than in CAD.
+
+The camera cannot see the table height, because the board pose is free. Pinning the board to the table instead raised the error to 7.1 px.
+
+The table height therefore comes from the ruler gaps instead: `table_z` in the kinematics file, 12.5 ± 1.2 mm below the bottom of the base meshes. With it, the model matches the ruler gaps within 1.1 mm RMS. `so101_table_touch.py` uses `table_z`.
+
+A new `kinematics --write` drops `table_z`, because it belongs to the old origins. Measure it again after every fit.
+
+**Earlier result on 2026-11-01** (before tightening; 265 samples, 3 board placements):
 
 - The held-out error went from 10.6 px with the CAD origins to 7.6 px. Every run improved.
 - Earlier test: the geometry was fitted on the old placements only, then tested on a new one. The error went from 16.5 px to 9.2 px.

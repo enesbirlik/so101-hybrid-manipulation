@@ -1,22 +1,27 @@
-# so101_hand_eye.py kinematics, 2026-11-01 18:17, 265 samples, 3 board placements
-# held-out runs: 10.58 px with the CAD origins, 7.63 px with these
+# so101_hand_eye.py kinematics, 2026-11-01 20:04, 79 samples, 1 board placements
+# held-out runs: 9.89 px with the CAD origins, 4.77 px with these
 # Joint origins (parent link -> joint frame) that so101_new_calib.urdf reads; cad = the upstream values.
+# Data: hand_eye_s4 (2 runs, after tightening the wrist_flex screws).
+# table_z: the table surface in base_link [m] for these origins. The camera cannot see it (the board
+# pose is free), so it comes from ruler gaps under the hand, torque on, at 6 poses: 12.5 +- 1.2 mm below
+# the bottom of the base meshes (-2.4 mm). Measure again after a new fit.
+table_z: -0.0149
 joints:
   shoulder_lift:
     xyz: [-0.0303992, -0.0182778, -0.0542]
-    rpy: [0.0002706594459836359, -1.557225842865679, -1.5710706843699507]
+    rpy: [0.0004945414218332463, -1.563368965717143, -1.5712945550630046]
     cad:
       xyz: [-0.0303992, -0.0182778, -0.0542]
       rpy: [-1.5708, -1.5708, 0.0]
   elbow_flex:
     xyz: [-0.11257, -0.028, 1.73763e-16]
-    rpy: [0.014083164531827496, -0.0003058984049719258, 1.5707978459555976]
+    rpy: [0.022902124658493003, -0.006208308620727626, 1.5707289049351953]
     cad:
       xyz: [-0.11257, -0.028, 1.73763e-16]
       rpy: [-3.63608e-16, 8.74301e-16, 1.5708]
   wrist_flex:
-    xyz: [-0.14174226447443272, 0.009002772923807937, 1.1996698799713254e-17]
-    rpy: [-0.004441845018559331, 0.008159054310321363, -1.5708181207576903]
+    xyz: [-0.14578601090249904, 0.007052592732490699, -5.969097569594909e-18]
+    rpy: [-0.0016182611506589287, 0.007515524808343072, -1.5708060810708622]
     cad:
       xyz: [-0.1349, 0.0052, 3.62355e-17]
       rpy: [4.02456e-15, 8.67362e-16, -1.5708]
