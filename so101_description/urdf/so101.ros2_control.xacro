@@ -8,7 +8,7 @@
           <plugin>mock_components/GenericSystem</plugin>
         </xacro:if>
         <xacro:unless value="${use_mock_hardware}">
-          <!-- phase 4: the ST3215 bus interface (so101_hardware), not written yet -->
+          <!-- the ST3215 bus; parameters and defaults in so101_hardware/README.md -->
           <plugin>so101_hardware/SO101Hardware</plugin>
         </xacro:unless>
       </hardware>

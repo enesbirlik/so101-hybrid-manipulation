@@ -80,7 +80,7 @@ ros2 launch so101_description display.launch.py
 | Path | Role | Status |
 |---|---|---|
 | [`so101_description/`](so101_description/) | URDF/xacro, meshes, RViz display launch | ✅ package |
-| [`so101_hardware/`](so101_hardware/) | C++ `ros2_control` hardware interface for the ST3215 bus | placeholder (phase 4) |
+| [`so101_hardware/`](so101_hardware/) | C++ `ros2_control` hardware interface for the ST3215 bus | 🚧 builds, not yet run on the arm |
 | [`so101_bringup/`](so101_bringup/) | Joint calibration, controller config, control launch (mock hardware for now) | ✅ package |
 | [`so101_moveit_config/`](so101_moveit_config/) | MoveIt 2 configuration (pick_ik, OMPL, Pilz), demo launch | ✅ package |
 | [`so101_perception/`](so101_perception/) | Camera calibration, ArUco, object detection | placeholder (phases 3, 5) |

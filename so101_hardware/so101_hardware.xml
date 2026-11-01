@@ -1,0 +1,7 @@
+<library path="so101_hardware">
+  <class name="so101_hardware/SO101Hardware"
+         type="so101_hardware::SO101Hardware"
+         base_class_type="hardware_interface::SystemInterface">
+    <description>ros2_control SystemInterface for the six Feetech ST3215 servos of the SO-101.</description>
+  </class>
+</library>
