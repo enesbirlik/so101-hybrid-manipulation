@@ -30,12 +30,22 @@ check_urdf /tmp/so101.urdf
 | `use_wrist_camera` | `true` | Adds the wrist camera mount and `wrist_camera_link` to the gripper |
 | `gui` | `true` | Starts `joint_state_publisher_gui` (sliders) |
 
+The xacro also takes:
+
+| Xacro argument | Default | Description |
+|---|---|---|
+| `table` | `true` | A `table` link fixed to `base_link`, top at `table_z` from the kinematics file, as a collision object for planning |
+| `ros2_control` | `false` | Adds the `<ros2_control>` block (`urdf/so101.ros2_control.xacro`); `so101_bringup` sets it |
+| `use_mock_hardware` | `true` | With `ros2_control`: `mock_components/GenericSystem` instead of `so101_hardware/SO101Hardware` |
+| `kinematics` | `config/so101_kinematics.yaml` | The joint origin calibration to load |
+
 ## Files
 
 | Path | Content |
 |---|---|
 | `urdf/so101_new_calib.urdf` | Vendored upstream URDF (mesh paths changed to `package://`, three joint origins from the kinematics file) |
-| `urdf/so101.urdf.xacro` | Entry point: loads the kinematics file, includes the arm, optionally the camera |
+| `urdf/so101.urdf.xacro` | Entry point: loads the kinematics file, includes the arm, optionally the camera, the table and `ros2_control` |
+| `urdf/so101.ros2_control.xacro` | `ros2_control` interfaces of the six joints: position command, position and velocity state |
 | `config/so101_kinematics.yaml` | Calibrated `shoulder_lift`, `elbow_flex`, `wrist_flex` origins (upstream values as `cad`), see [tools](../tools/README.md#kinematic-calibration) |
 | `urdf/wrist_camera.xacro` | Wrist camera mount + camera links (from upstream `so101_new_calib_camera.urdf`) |
 | `meshes/` | STL meshes referenced by the URDF |

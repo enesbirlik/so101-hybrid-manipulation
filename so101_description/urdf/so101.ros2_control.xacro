@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<!-- ros2_control interfaces of the six joints: position command, position and velocity state. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="so101_ros2_control" params="name use_mock_hardware">
+    <ros2_control name="${name}" type="system">
+      <hardware>
+        <xacro:if value="${use_mock_hardware}">
+          <plugin>mock_components/GenericSystem</plugin>
+        </xacro:if>
+        <xacro:unless value="${use_mock_hardware}">
+          <!-- phase 4: the ST3215 bus interface (so101_hardware), not written yet -->
+          <plugin>so101_hardware/SO101Hardware</plugin>
+        </xacro:unless>
+      </hardware>
+      <xacro:macro name="so101_joint" params="joint">
+        <joint name="${joint}">
+          <command_interface name="position"/>
+          <state_interface name="position">
+            <param name="initial_value">0.0</param>
+          </state_interface>
+          <state_interface name="velocity"/>
+        </joint>
+      </xacro:macro>
+      <xacro:so101_joint joint="shoulder_pan"/>
+      <xacro:so101_joint joint="shoulder_lift"/>
+      <xacro:so101_joint joint="elbow_flex"/>
+      <xacro:so101_joint joint="wrist_flex"/>
+      <xacro:so101_joint joint="wrist_roll"/>
+      <xacro:so101_joint joint="gripper"/>
+    </ros2_control>
+  </xacro:macro>
+</robot>
