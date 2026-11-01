@@ -10,6 +10,9 @@
            capture + solve to keep the board in view)
   solve    cv2.calibrateHandEye (eye-in-hand) on the saved samples -> YAML;
            for auto samples it also reports the play between both approaches
+  kinematics
+           fit the camera pose and the shoulder_lift, elbow_flex and wrist_flex
+           joint origins together on samples from several board placements
 
 The board must not move during a capture session: the solver relies on it
 staying at one place in base_link. Vary the gripper orientation as much as
@@ -21,7 +24,8 @@ inside its gear play and wobble the encoder does not see; with torque on the
 servo holds its output shaft, and nobody touches the arm.
 
 Forward kinematics come straight from so101_new_calib.urdf (base_link ->
-gripper_link) and the joint calibration file, so ROS does not need to run.
+gripper_link), with the joint origins from so101_kinematics.yaml, and the
+joint calibration file, so ROS does not need to run.
 Samples keep raw ticks and corners, so `solve` can be rerun after a joint or
 camera recalibration without capturing again.
 
@@ -54,6 +58,7 @@ from so101_calibrate import DEFAULT_FILE as JOINT_FILE, JOINTS, TICKS_PER_DEG, A
 REPO = Path(__file__).resolve().parents[1]
 URDF = REPO / "so101_description" / "urdf" / "so101_new_calib.urdf"
 CAMERA_XACRO = REPO / "so101_description" / "urdf" / "wrist_camera.xacro"
+KINEMATICS_FILE = REPO / "so101_description" / "config" / "so101_kinematics.yaml"
 DEFAULT_SAMPLES = Path.home() / "so101_data" / "hand_eye"
 DEFAULT_FILE = REPO / "so101_perception" / "config" / "wrist_camera_hand_eye.yaml"
 
@@ -83,6 +88,11 @@ REFINE_JOINTS = ["shoulder_lift", "elbow_flex", "wrist_flex"]
 # The board lies on the table the arm stands on. base_link is 2.4 mm above the lowest point
 # of the base meshes, about the thickness of the board on its backing, so its top is at ~0.
 BOARD_Z = 0.0
+# kinematics: these joint origins move across their parent link (along the axis a shift
+# changes nothing the camera sees), and the axes of REFINE_JOINTS tilt. The zero offsets
+# stay out: with the geometry free they come out within 1 deg and change nothing held out.
+# An elbow_flex shift did not help either (held out 7.6 px without it, 7.8 px with it).
+KIN_SHIFT = ["wrist_flex"]
 
 METHODS = {
     "tsai": cv2.CALIB_HAND_EYE_TSAI,
@@ -143,8 +153,18 @@ def origin_transform(joint):
                      [float(v) for v in o.get("xyz", "0 0 0").split()])
 
 
-def load_chain(path, base, tool):
-    """Joints from base to tool as (name, fixed origin, axis or None for fixed joints)."""
+def load_kinematics(path=KINEMATICS_FILE):
+    """Calibrated joint origins of the URDF: {joint: {xyz, rpy, cad: {xyz, rpy}}}."""
+    with open(path) as f:
+        return yaml.safe_load(f)["joints"]
+
+
+def load_chain(path, base, tool, cad=False):
+    """Joints from base to tool as (name, fixed origin, axis or None for fixed joints).
+
+    The URDF takes some joint origins from the kinematics file: calibrated, or the upstream
+    CAD values with cad=True."""
+    kinematics = load_kinematics() if path == URDF else {}
     # iter() also reaches into xacro macros; <joint> inside <transmission> has no child
     joints = [j for j in ET.parse(path).getroot().iter("joint") if j.find("child") is not None]
     by_child = {j.find("child").get("link"): j for j in joints}
@@ -152,7 +172,13 @@ def load_chain(path, base, tool):
     while link != base:
         j = by_child[link]
         axis = None if j.get("type") == "fixed" else np.array([float(v) for v in j.find("axis").get("xyz").split()])
-        chain.append((j.get("name"), origin_transform(j), axis))
+        if j.get("name") in kinematics:
+            o = kinematics[j.get("name")]
+            o = o["cad"] if cad else o
+            origin = transform(rpy_matrix(*o["rpy"]), o["xyz"])
+        else:
+            origin = origin_transform(j)
+        chain.append((j.get("name"), origin, axis))
         link = j.find("parent").get("link")
     return chain[::-1]
 
@@ -717,19 +743,43 @@ def refine_report(chain, cal, used, obs, T_gc, T_bg, T_cb, K, D):
                                              for n, v, e in zip(REFINE_JOINTS, fit.x[9:], sd[9:])))
 
 
-def cmd_solve(args):
-    cal, chain, names, K, D, board, dictionary, board_points = setup(args)
-    used, T_bg, T_cb, obs = [], [], [], []
-    for s in load_samples(args.samples):
-        gray = cv2.imread(str(args.samples / s["image"]), cv2.IMREAD_GRAYSCALE)
+def detect_samples(folder, board, dictionary, board_points, K, D):
+    """Samples with the board found: (samples, camera -> board, (board points, corners [px]))."""
+    used, T_cb, obs = [], [], []
+    for s in load_samples(folder):
+        gray = cv2.imread(str(folder / s["image"]), cv2.IMREAD_GRAYSCALE)
         corners, ids = cam.detect(gray, board, dictionary) if gray is not None else (None, None)
         if ids is None or len(ids) < MIN_CORNERS:
             print(f"  skip {s['image']}: board not found")
             continue
         used.append(s)
-        T_bg.append(forward(chain, to_rad(s["ticks"], cal)))
         T_cb.append(board_pose(corners, ids, board_points, K, D)[0])
         obs.append((board_points[ids.flatten()], corners.reshape(-1, 2).astype(np.float64)))
+    return used, T_cb, obs
+
+
+def save_hand_eye(path, T_gc, comments):
+    data = {
+        "parent_frame": TOOL,
+        "child_frame": "wrist_camera_optical_frame",
+        "translation": dict(zip("xyz", [float(v) for v in T_gc[:3, 3]])),
+        "rotation": dict(zip("xyzw", matrix_quaternion(T_gc[:3, :3]))),
+        "rpy": matrix_rpy(T_gc[:3, :3]),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        for line in comments:
+            f.write(f"# {line}\n")
+        f.write("# child frame = OpenCV optical frame of the upright 1280x720 image (x right, y down, z forward)\n")
+        f.write("# rpy is URDF order (R = Rz(yaw) Ry(pitch) Rx(roll)), metres and radians\n")
+        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=None)
+    print(f"saved {path}")
+
+
+def cmd_solve(args):
+    cal, chain, names, K, D, board, dictionary, board_points = setup(args)
+    used, T_cb, obs = detect_samples(args.samples, board, dictionary, board_points, K, D)
+    T_bg = [forward(chain, to_rad(s["ticks"], cal)) for s in used]
     print(f"{len(used)} usable samples in {args.samples}")
     if len(used) < MIN_SAMPLES:
         sys.exit(f"need at least {MIN_SAMPLES}, better 15-25")
@@ -770,23 +820,160 @@ def cmd_solve(args):
     tilt = np.degrees(np.arccos(abs(mean_rotation([T[:3, :3] for T in T_bt])[2, 2])))
     print(f"board in base_link: {height:+.1f} mm above base_link, tilted {tilt:.1f} deg (on the table: ~0, ~0)")
 
-    data = {
-        "parent_frame": TOOL,
-        "child_frame": "wrist_camera_optical_frame",
-        "translation": dict(zip("xyz", [float(v) for v in T_gc[:3, 3]])),
-        "rotation": dict(zip("xyzw", matrix_quaternion(T_gc[:3, :3]))),
-        "rpy": matrix_rpy(T_gc[:3, :3]),
-    }
-    args.file.parent.mkdir(parents=True, exist_ok=True)
-    with open(args.file, "w") as f:
-        f.write(f"# so101_hand_eye.py, {datetime.now():%Y-%m-%d %H:%M}, method {best}, {len(used)} samples\n")
-        f.write(f"# board spread in base_link: {pos:.1f} mm, {rot:.2f} deg (RMS)\n")
-        f.write("# child frame = OpenCV optical frame of the upright 1280x720 image (x right, y down, z forward)\n")
-        f.write("# rpy is URDF order (R = Rz(yaw) Ry(pitch) Rx(roll)), metres and radians\n")
-        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=None)
-    print(f"saved {args.file}")
+    save_hand_eye(args.file, T_gc, [f"so101_hand_eye.py, {datetime.now():%Y-%m-%d %H:%M}, method {best}, {len(used)} samples",
+                                    f"board spread in base_link: {pos:.1f} mm, {rot:.2f} deg (RMS)"])
     if args.refine_joints:
         refine_report(chain, cal, used, obs, T_gc, T_bg, T_cb, K, D)
+
+
+# --- kinematics --------------------------------------------------------------
+
+def perpendicular(axis):
+    """Two unit vectors perpendicular to axis and to each other."""
+    u = np.cross(axis, [1.0, 0, 0] if abs(axis[0]) < 0.9 else [0, 1.0, 0])
+    u /= np.linalg.norm(u)
+    return u, np.cross(axis, u)
+
+
+def geometry_directions(chain):
+    """Per joint: directions its origin moves in (parent frame) and its axis tilts about (joint frame).
+
+    A tilt about the previous joint's axis is that joint's zero offset; for shoulder_lift it
+    is a shoulder_pan offset, which the board yaw absorbs, so that direction stays out."""
+    out, previous = {}, None
+    for name, origin, axis in chain:
+        if axis is None:
+            continue
+        shift = perpendicular(origin[:3, :3] @ axis) if name in KIN_SHIFT else ()
+        tilt = ()
+        if name in REFINE_JOINTS:
+            w = np.cross(axis, origin[:3, :3].T @ previous)
+            tilt = perpendicular(axis) if np.linalg.norm(w) < 0.1 else (w / np.linalg.norm(w),)
+        out[name] = (shift, tilt)
+        previous = axis
+    return out
+
+
+def adjusted_chain(chain, geometry):
+    """chain with the KIN_SHIFT origins moved across their parent link [m] and the
+    REFINE_JOINTS axes tilted [rad], along geometry_directions."""
+    directions, k, out = geometry_directions(chain), 0, []
+    for name, origin, axis in chain:
+        o = origin.copy()
+        shift, tilt = directions.get(name, ((), ()))
+        for u in shift:
+            o[:3, 3] += geometry[k] * u
+            k += 1
+        if tilt:
+            o = o @ transform(cv2.Rodrigues(sum(geometry[k + i] * u for i, u in enumerate(tilt)))[0])
+            k += len(tilt)
+        out.append((name, o, axis))
+    return out
+
+
+def kinematics_residuals(chain, data, x, nboards, K, D):
+    """Corner reprojection [px] for x = camera pose (6), one free board pose per placement (6 each), geometry.
+
+    data: (joint angles, placement, board points, corners [px]) per sample."""
+    T_cg = np.linalg.inv(pose_matrix(x[:6]))
+    T_bt = [pose_matrix(x[6 + 6 * i:12 + 6 * i]) for i in range(nboards)]
+    ch = adjusted_chain(chain, x[6 + 6 * nboards:])
+    out = []
+    for q, i, obj, img in data:
+        T_cb = T_cg @ np.linalg.inv(forward(ch, q)) @ T_bt[i]
+        p, _ = cv2.fisheye.projectPoints(obj.reshape(-1, 1, 3), cv2.Rodrigues(T_cb[:3, :3])[0],
+                                         np.ascontiguousarray(T_cb[:3, 3]).reshape(3, 1), K, D)
+        out.append((p.reshape(-1, 2) - img).ravel())
+    return np.concatenate(out)
+
+
+def kinematics_fit(chain, data, x0, free, nboards, K, D):
+    """x0 with the `free` parameters fitted."""
+    def residuals(z):
+        x = x0.copy()
+        x[free] = z
+        return kinematics_residuals(chain, data, x, nboards, K, D)
+    x = x0.copy()
+    x[free] = least_squares(residuals, x0[free], loss="huber", f_scale=3.0, x_scale="jac").x
+    return x
+
+
+def cmd_kinematics(args):
+    """Each folder is one board placement. The fit starts from the CAD joint origins."""
+    cal, _, _, K, D, board, dictionary, board_points = setup(args)
+    chain = load_chain(URDF, BASE, TOOL, cad=True)
+    T_gc = load_hand_eye(args.file)
+    if T_gc is None:
+        sys.exit(f"no hand-eye result in {args.file}: run solve first")
+    data, runs, x0 = [], [], [pose_vector(T_gc)]
+    for i, folder in enumerate(args.folders):
+        used, T_cb, obs = detect_samples(folder, board, dictionary, board_points, K, D)
+        keep = [k for k, s in enumerate(used) if s.get("pose", "manual").split("-")[0] not in args.exclude]
+        if len(keep) < MIN_SAMPLES:
+            sys.exit(f"{folder}: only {len(keep)} usable samples")
+        for k in keep:
+            data.append((to_rad(used[k]["ticks"], cal), i, *obs[k]))
+            runs.append(f"{folder.name}/{used[k].get('pose', 'manual').split('-')[0]}")
+        T_bt = [forward(chain, to_rad(used[k]["ticks"], cal)) @ T_gc @ T_cb[k] for k in keep]
+        x0.append(pose_vector(transform(mean_rotation([T[:3, :3] for T in T_bt]), np.mean([T[:3, 3] for T in T_bt], 0))))
+        print(f"{folder}: {len(keep)} samples")
+    nb, ngeom = len(args.folders), sum(len(s) + len(t) for s, t in geometry_directions(chain).values())
+    x0 = np.concatenate(x0 + [np.zeros(ngeom)])
+    geometry = np.arange(6 + 6 * nb, len(x0))
+
+    def free(placements, geom):
+        idx = list(range(6)) + [6 + 6 * i + k for i in placements for k in range(6)]
+        return np.r_[idx, geometry if geom else []].astype(int)
+
+    # Held out: fit without one run, test on it. Its board placement is fitted on the other
+    # runs there, so runs alone at their placement are skipped.
+    print("\nleave one run out, held-out RMS [px]:   CAD origins   fitted")
+    held = []
+    for run in sorted(set(runs)):
+        train = [d for d, r in zip(data, runs) if r != run]
+        test = [d for d, r in zip(data, runs) if r == run]
+        placements = sorted({d[1] for d in train})
+        if test[0][1] not in placements:
+            continue
+        line = []
+        for geom in (False, True):
+            x = kinematics_fit(chain, train, x0, free(placements, geom), nb, K, D)
+            line.append(rms_px(kinematics_residuals(chain, test, x, nb, K, D)))
+        held.append(line)
+        print(f"  {run:<36}{line[0]:6.2f}      {line[1]:6.2f}", flush=True)
+    if held:
+        cad_px, fit_px = np.mean(held, 0)
+        print(f"  {'mean':<36}{cad_px:6.2f}      {fit_px:6.2f}")
+
+    x = kinematics_fit(chain, data, x0, free(range(nb), True), nb, K, D)
+    print(f"\nall {len(data)} samples: {rms_px(kinematics_residuals(chain, data, x, nb, K, D)):.2f} px")
+    fitted = adjusted_chain(chain, x[geometry])
+    kinematics = load_kinematics()
+    for (name, cad, _), (_, o, axis) in zip(chain, fitted):
+        if name not in kinematics:
+            continue
+        moved = (o[:3, 3] - cad[:3, 3]) * 1000
+        longer = (np.linalg.norm(o[:3, 3]) - np.linalg.norm(cad[:3, 3])) * 1000
+        print(f"  {name:<14}origin moved [{moved[0]:+5.1f} {moved[1]:+5.1f} {moved[2]:+5.1f}] mm "
+              f"(link {longer:+5.1f} mm longer), axis tilted {rotation_angle(cad[:3, :3].T @ o[:3, :3]):.1f} deg")
+        kinematics[name].update(xyz=[float(v) for v in o[:3, 3]], rpy=matrix_rpy(o[:3, :3]))
+    zero = {n: 0.0 for n, _, axis in chain if axis is not None}
+    moved = (forward(fitted, zero)[:3, 3] - forward(chain, zero)[:3, 3]) * 1000
+    print(f"  gripper_link at the zero pose moved [{moved[0]:+5.1f} {moved[1]:+5.1f} {moved[2]:+5.1f}] mm in base_link")
+    T_gc = pose_matrix(x[:6])
+    p = T_gc[:3, 3] * 1000
+    print(f"  camera at [{p[0]:6.1f} {p[1]:6.1f} {p[2]:6.1f}] mm in gripper_link")
+    if not args.write:
+        print("\nreport only: --write saves the joint origins and the camera pose")
+        return
+    stamp = f"so101_hand_eye.py kinematics, {datetime.now():%Y-%m-%d %H:%M}, {len(data)} samples, {nb} board placements"
+    held_line = f"held-out runs: {cad_px:.2f} px with the CAD origins, {fit_px:.2f} px with these" if held else "no held-out check"
+    with open(KINEMATICS_FILE, "w") as f:
+        f.write(f"# {stamp}\n# {held_line}\n")
+        f.write("# Joint origins (parent link -> joint frame) that so101_new_calib.urdf reads; cad = the upstream values.\n")
+        yaml.safe_dump({"joints": kinematics}, f, sort_keys=False, default_flow_style=None)
+    print(f"saved {KINEMATICS_FILE}")
+    save_hand_eye(args.file, T_gc, [stamp, held_line, "fitted together with the joint origins in so101_kinematics.yaml"])
 
 
 def main():
@@ -812,8 +999,14 @@ def main():
     solve = sub.add_parser("solve")
     solve.add_argument("--refine-joints", action="store_true",
                        help="also estimate zero offsets of " + ", ".join(REFINE_JOINTS) + " (report only)")
+    kinematics = sub.add_parser("kinematics")
+    kinematics.add_argument("folders", type=Path, nargs="+", help="sample folders, one per board placement")
+    kinematics.add_argument("--exclude", nargs="+", default=[], metavar="RUN",
+                            help="runs to leave out (the timestamp of their pose names, e.g. 20261101_130751)")
+    kinematics.add_argument("--write", action="store_true",
+                            help=f"save the joint origins to {KINEMATICS_FILE.name} and the camera pose to --file")
     args = parser.parse_args()
-    {"capture": cmd_capture, "auto": cmd_auto, "solve": cmd_solve}[args.cmd](args)
+    {"capture": cmd_capture, "auto": cmd_auto, "solve": cmd_solve, "kinematics": cmd_kinematics}[args.cmd](args)
 
 
 if __name__ == "__main__":

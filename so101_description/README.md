@@ -34,8 +34,9 @@ check_urdf /tmp/so101.urdf
 
 | Path | Content |
 |---|---|
-| `urdf/so101_new_calib.urdf` | Vendored upstream URDF (mesh paths changed to `package://`) |
-| `urdf/so101.urdf.xacro` | Entry point: includes the arm, optionally the camera |
+| `urdf/so101_new_calib.urdf` | Vendored upstream URDF (mesh paths changed to `package://`, three joint origins from the kinematics file) |
+| `urdf/so101.urdf.xacro` | Entry point: loads the kinematics file, includes the arm, optionally the camera |
+| `config/so101_kinematics.yaml` | Calibrated `shoulder_lift`, `elbow_flex`, `wrist_flex` origins (upstream values as `cad`), see [tools](../tools/README.md#kinematic-calibration) |
 | `urdf/wrist_camera.xacro` | Wrist camera mount + camera links (from upstream `so101_new_calib_camera.urdf`) |
 | `meshes/` | STL meshes referenced by the URDF |
 | `launch/display.launch.py` | `robot_state_publisher` + `joint_state_publisher_gui` + RViz |

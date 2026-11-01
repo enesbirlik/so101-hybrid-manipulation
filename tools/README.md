@@ -93,6 +93,35 @@ The board counts as visible only beside the jaws, which cover the bottom middle 
 
 Result on 2026-10-28 (114 samples from 3 runs): the `shoulder_lift` zero was off by +10.5° and is now corrected in the calibration file (2048 → 1929). After that, the board spread is 4.7 mm / 0.71° and the camera sits at (−1.2, 69.5, −5.1) mm in `gripper_link`. Recalibrating `shoulder_lift` with `so101_calibrate.py` would undo this correction. See [devlog day 3](../docs/devlog/2026-10-28-day-3.md).
 
+### Kinematic calibration
+
+```bash
+python3 tools/so101_hand_eye.py kinematics ~/so101_data/hand_eye ~/so101_data/hand_eye_wide ~/so101_data/hand_eye_s3 \
+    --exclude 20261101_130751 [--write]
+```
+
+This fits the printed arm's geometry together with the camera pose, using all the samples. Each folder is one board placement and gets its own free board pose. The fit starts from the upstream CAD joint origins and estimates three things:
+
+- **Origin shift:** `wrist_flex` moves across the forearm (in the plane perpendicular to its axis). An `elbow_flex` shift did not help: 7.8 px held out with it, 7.6 px without.
+- **Axis tilts:** the `shoulder_lift`, `elbow_flex` and `wrist_flex` axes tilt.
+  - The `shoulder_lift` tilt about the `shoulder_pan` axis is left out. It acts as a pan zero offset, which the board yaw absorbs. Left free, it drifted to 5° and moved the gripper 22 mm sideways at zero.
+- **Zero offsets:** not fitted. With the geometry free they came out within 1° and did not change the held-out error.
+
+The fit is checked by leaving out one run at a time. `--write` saves the joint origins to [`so101_description/config/so101_kinematics.yaml`](../so101_description/config/so101_kinematics.yaml) and the camera pose to the hand-eye YAML.
+
+The URDF reads those origins through xacro. These tools read them too, so RViz, MoveIt and the tools all use the same model. The file also keeps the upstream values as `cad`.
+
+**Result on 2026-11-01** (265 samples, 3 board placements):
+
+- The held-out error went from 10.6 px with the CAD origins to 7.6 px. Every run improved.
+- Earlier test: the geometry was fitted on the old placements only, then tested on a new one. The error went from 16.5 px to 9.2 px.
+- `wrist_flex` sits 7.0 mm farther along the forearm than in CAD, and 3.8 mm off sideways. The axes tilt 0.5–0.8°.
+- Run `20261101_130751` is excluded: the camera brushed the arm there, and its error was 21–27 px with any model.
+- **Check without the camera:** the gaps to the table seen in the `--hover-mm` test were 10, 12, 20, 10 and 13 mm. The model predicts them with 5.1 mm RMS error, against 5.9 mm with the CAD origins.
+- **What the shift means:** the meshes are rigid CAD parts, so in RViz the wrist meshes now overlap the forearm. The real parts do not overlap. The 7 mm is an effective correction for where the wrist turns as seen from the camera; it is not a measured part length.
+
+The board still comes out 13–24 mm below `base_link`, with the CAD origins as well as with the fitted ones.
+
 `solve` checks every method by where it puts the (fixed) board in `base_link`; the spread across samples is the quality measure. Samples (`~/so101_data/hand_eye/`) store raw ticks and images, so `solve` can be rerun after a joint or camera recalibration. Result: [`so101_perception/config/wrist_camera_hand_eye.yaml`](../so101_perception/config/wrist_camera_hand_eye.yaml), `gripper_link` → `wrist_camera_optical_frame` (OpenCV optical frame of the upright image).
 
 ## `so101_wrap_test.py`
