@@ -15,7 +15,12 @@
 namespace so101_hardware
 {
 
-// Control table (STS3215). EEPROM is below address 40, RAM from 40 on.
+// Control table (STS3215). EEPROM is below address 40, RAM from 40 on. With the EEPROM lock
+// on (address 55 = 1, the default) a write to an EEPROM address only changes the RAM copy:
+// it takes effect at once and is gone after a power cycle.
+constexpr uint8_t P_COEFFICIENT = 21;     // u8, position loop P (factory 32)
+constexpr uint8_t D_COEFFICIENT = 22;     // u8
+constexpr uint8_t I_COEFFICIENT = 23;     // u8
 constexpr uint8_t HOMING_OFFSET = 31;     // u16, sign-magnitude (bit 11)
 constexpr uint8_t TORQUE_ENABLE = 40;     // u8
 constexpr uint8_t ACCELERATION = 41;      // u8, unit 100 step/s^2, 0 = no limit

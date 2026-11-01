@@ -50,6 +50,9 @@ private:
   int torque_limit_ = 1000;   // 0.1 %
   int acceleration_ = 0;      // 100 step/s^2, 0 = servo default (no limit)
   int goal_speed_ = 0;        // step/s, 0 = no limit
+  int p_coefficient_ = 16;    // position loop gains, written to RAM on activation
+  int d_coefficient_ = 32;
+  int i_coefficient_ = 0;
   int max_failures_ = 5;      // consecutive bus failures before read() reports an error
   int failures_ = 0;
 };

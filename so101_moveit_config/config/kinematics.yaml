@@ -1,5 +1,8 @@
-# pick_ik: the arm has 5 joints, so most 6-D poses are out of reach. Position counts fully,
-# orientation half; in RViz "Approx IK Solutions" accepts the closest pose it finds.
+# pick_ik, position only (rotation_scale 0). With 5 joints, most 6-D poses are out of reach,
+# and an orientation weight made IK fail on nearly every dragged marker pose (0 of 30 with the
+# orientation 17 deg off; position only: 29 of 30, 0.1 mm, 5 ms). The gripper orientation then
+# follows from the position; tasks that need a given orientation plan with joint goals or
+# compute a reachable orientation first.
 arm:
   kinematics_solver: pick_ik/PickIkPlugin
   kinematics_solver_timeout: 0.05
@@ -7,7 +10,7 @@ arm:
   mode: global
   stop_optimization_on_valid_solution: true
   position_scale: 1.0
-  rotation_scale: 0.5
+  rotation_scale: 0.0
   position_threshold: 0.001
   orientation_threshold: 0.01
   cost_threshold: 0.001

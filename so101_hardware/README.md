@@ -2,7 +2,10 @@
 
 A C++ `ros2_control` `SystemInterface` plugin (`so101_hardware/SO101Hardware`) for the six Feetech ST3215 servos on the Waveshare bus driver board.
 
-> **Status (2026-11-01):** builds, not yet run on the arm.
+> **Status (2026-11-01):** first runs on the arm. It starts, holds the pose, and MoveIt plans execute. Open issues:
+> - Shaking in some moves; P is lowered to 16, not yet checked on the arm.
+> - With the hand near the table, the start state is in collision with the table model.
+> - Between plan and execute, `shoulder_lift` drifted more than 0.05 rad.
 
 ```bash
 ros2 launch so101_bringup so101_control.launch.py use_mock_hardware:=false
@@ -33,6 +36,7 @@ Set as `<param>` in the `<hardware>` block of [`so101.ros2_control.xacro`](../so
 | `acceleration` | `0` | 100 step/s² units, 0 = no servo-side limit (the trajectory controller shapes the motion) |
 | `goal_speed` | `0` | step/s, 0 = no servo-side limit |
 | `max_bus_failures` | `5` | Consecutive failed reads before an error |
+| `p_coefficient`, `d_coefficient`, `i_coefficient` | `16`, `32`, `0` | Position loop gains, LeRobot's values for the SO-100/101. The factory P of 32 made the arm shake under MoveIt. They are written on activation with the EEPROM lock on, so they only change RAM: the factory values return after a power cycle |
 
 ## Planned
 

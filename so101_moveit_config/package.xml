@@ -21,6 +21,7 @@
   <exec_depend>rviz2</exec_depend>
   <exec_depend>so101_bringup</exec_depend>
   <exec_depend>so101_description</exec_depend>
+  <exec_depend>so101_perception</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

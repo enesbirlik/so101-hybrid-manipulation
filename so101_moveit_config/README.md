@@ -6,12 +6,12 @@ MoveIt 2 configuration of the SO-101, written by hand (no Setup Assistant projec
 ros2 launch so101_moveit_config demo.launch.py   # control stack (mock hardware) + move_group + RViz
 ```
 
-In RViz, drag the interactive marker or pick a named state (`zero`, `rest`) under *Goal State*, then *Plan & Execute*. Tick *Approx IK Solutions*: with 5 joints, most dragged 6-D poses cannot be reached exactly.
+In RViz, drag the interactive marker or pick a named state (`zero`, `rest`) under *Goal State*, then *Plan & Execute*. IK is position only: with 5 joints, most 6-D poses cannot be reached, and an orientation weight made dragging fail.
 
 | File | Content |
 |---|---|
 | `config/so101.srdf` | Groups `arm` (`base_link` → `gripper_frame_link`, 5 joints) and `gripper`, named states, end effector, disabled collision pairs |
-| `config/kinematics.yaml` | [pick_ik](https://github.com/PickNikRobotics/pick_ik): position fully, orientation half weighted |
+| `config/kinematics.yaml` | [pick_ik](https://github.com/PickNikRobotics/pick_ik), position only: the dragged marker sets where the gripper goes, not its orientation |
 | `config/joint_limits.yaml` | Position limits from the joint calibration, velocity/acceleration limits, 30 % default scaling |
 | `config/moveit_controllers.yaml` | `arm_controller` and `gripper_controller` (`FollowJointTrajectory`, from `so101_bringup`) |
 | `config/pilz_cartesian_limits.yaml` | Cartesian limits for Pilz `LIN`/`CIRC` |
