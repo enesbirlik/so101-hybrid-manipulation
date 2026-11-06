@@ -33,7 +33,16 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Best Effort
-        Value: /wrist_camera/image_raw
+        Value: /wrist_camera/image_raw/compressed
+      Value: true
+    - Class: rviz_default_plugins/Marker
+      Name: Camera field of view
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /wrist_camera/fov
       Value: true
     - Class: rviz_default_plugins/Axes
       Name: Camera frame
