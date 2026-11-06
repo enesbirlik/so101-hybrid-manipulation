@@ -4,7 +4,7 @@ Launch files and configuration that start the SO-101: `robot_state_publisher`, t
 
 ```bash
 ros2 launch so101_bringup so101_control.launch.py                          # mock hardware (default)
-ros2 launch so101_bringup so101_control.launch.py use_mock_hardware:=false  # the servo bus, once so101_hardware exists
+ros2 launch so101_bringup so101_control.launch.py use_mock_hardware:=false  # the servo bus (so101_hardware)
 ```
 
 | Path | Content |
