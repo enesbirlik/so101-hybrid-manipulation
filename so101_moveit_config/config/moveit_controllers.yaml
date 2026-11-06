@@ -21,4 +21,6 @@ moveit_simple_controller_manager:
 trajectory_execution:
   allowed_execution_duration_scaling: 1.5
   allowed_goal_duration_margin: 1.0
-  allowed_start_tolerance: 0.05
+  # The servos hold a few degrees behind their goal under load (P 16); 0.05 rad rejected
+  # executions after shoulder_lift settled between plan and execute (2026-11-01).
+  allowed_start_tolerance: 0.1

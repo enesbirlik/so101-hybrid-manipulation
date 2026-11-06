@@ -4,8 +4,8 @@ A C++ `ros2_control` `SystemInterface` plugin (`so101_hardware/SO101Hardware`) f
 
 > **Status (2026-11-01):** first runs on the arm. It starts, holds the pose, and MoveIt plans execute. Open issues:
 > - Shaking in some moves; P is lowered to 16, not yet checked on the arm.
-> - With the hand near the table, the start state is in collision with the table model.
-> - Between plan and execute, `shoulder_lift` drifted more than 0.05 rad.
+> - With the hand near the table, the start state is in collision with the table model. From the folded rest, `so101_bringup`'s `so101_ready.py` fixes it.
+> - Between plan and execute, `shoulder_lift` drifted more than 0.05 rad. The start tolerance is now 0.1 rad.
 
 ```bash
 ros2 launch so101_bringup so101_control.launch.py use_mock_hardware:=false
