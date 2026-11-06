@@ -3,7 +3,7 @@
 A C++ `ros2_control` `SystemInterface` plugin (`so101_hardware/SO101Hardware`) for the six Feetech ST3215 servos on the Waveshare bus driver board.
 
 > **Status (2026-11-01):** first runs on the arm. It starts, holds the pose, and MoveIt plans execute. Open issues:
-> - Shaking in some moves; P is lowered to 16, not yet checked on the arm.
+> - Slow moves crept and shook (commands below the servo deadband per cycle). Faster MoveIt limits fixed it; P stays 16.
 > - With the hand near the table, the start state is in collision with the table model. From the folded rest, `so101_bringup`'s `so101_ready.py` fixes it.
 > - Between plan and execute, `shoulder_lift` drifted more than 0.05 rad. The start tolerance is now 0.1 rad.
 

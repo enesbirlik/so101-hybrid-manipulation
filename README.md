@@ -99,6 +99,7 @@ ros2 launch so101_description display.launch.py
 - [Day 2 — Fisheye calibration of the wrist camera](docs/devlog/2026-10-28-day-2.md) (2026-10-28)
 - [Day 3 — Hand-eye calibration, and a 10° shoulder error it uncovered](docs/devlog/2026-10-28-day-3.md) (2026-10-28)
 - [Day 4 — Kinematic calibration, and the play that fooled every contact test](docs/devlog/2026-11-01-day-4.md) (2026-10-29, 2026-11-01)
+- [Day 5 — ros2_control and MoveIt 2 on the real arm](docs/devlog/2026-11-06-day-5.md) (2026-11-01, 2026-11-06)
 
 New entries follow [`docs/devlog/template.md`](docs/devlog/template.md). Videos are linked from the entries, not stored in the repo.
 
