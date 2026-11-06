@@ -3,9 +3,11 @@
 # - elbow_flex max 1.62 rad (92.8 deg): the folded rest reads up to 92.3 deg on its stop, and a
 #   start state outside the limits is rejected.
 # - gripper keeps the URDF minimum (-10 deg, the closed stop) so it can squeeze.
-# Velocities are conservative for now (the servos do about 4.7 rad/s unloaded).
-default_velocity_scaling_factor: 0.3
-default_acceleration_scaling_factor: 0.3
+# Velocity 3 rad/s, acceleration 8 rad/s^2 (the servos do about 4.7 rad/s unloaded). At 2 and 4
+# with 0.1-0.3 scaling, moves took 8-12 s and crept in small steps: commands advanced
+# less than the servos' deadband per cycle (2026-11-06).
+default_velocity_scaling_factor: 0.5
+default_acceleration_scaling_factor: 0.5
 
 joint_limits:
   shoulder_pan:
@@ -13,46 +15,46 @@ joint_limits:
     min_position: -1.91986
     max_position: 1.91986
     has_velocity_limits: true
-    max_velocity: 2.0
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 4.0
+    max_acceleration: 8.0
   shoulder_lift:
     has_position_limits: true
     min_position: -1.700
     max_position: 1.74533
     has_velocity_limits: true
-    max_velocity: 2.0
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 4.0
+    max_acceleration: 8.0
   elbow_flex:
     has_position_limits: true
     min_position: -1.69
     max_position: 1.62
     has_velocity_limits: true
-    max_velocity: 2.0
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 4.0
+    max_acceleration: 8.0
   wrist_flex:
     has_position_limits: true
     min_position: -1.65806
     max_position: 1.65806
     has_velocity_limits: true
-    max_velocity: 2.0
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 4.0
+    max_acceleration: 8.0
   wrist_roll:
     has_position_limits: true
     min_position: -2.74385
     max_position: 2.84121
     has_velocity_limits: true
-    max_velocity: 2.0
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 4.0
+    max_acceleration: 8.0
   gripper:
     has_position_limits: true
     min_position: -0.174533
     max_position: 1.74533
     has_velocity_limits: true
-    max_velocity: 2.0
+    max_velocity: 3.0
     has_acceleration_limits: true
-    max_acceleration: 4.0
+    max_acceleration: 8.0
