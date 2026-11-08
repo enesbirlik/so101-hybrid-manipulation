@@ -3,20 +3,31 @@
 MoveIt 2 configuration of the SO-101, written by hand (no Setup Assistant project).
 
 ```bash
-ros2 launch so101_moveit_config demo.launch.py   # control stack (mock hardware) + move_group + RViz
+ros2 launch so101_moveit_config demo.launch.py                                       # mock hardware + move_group + RViz
+ros2 launch so101_moveit_config demo.launch.py use_mock_hardware:=false camera:=true  # the real arm, with the wrist camera
 ```
 
+| Launch argument | Default | Description |
+|---|---|---|
+| `use_mock_hardware` | `true` | `false` drives the servos through `so101_hardware` |
+| `camera` | `false` | Wrist camera image, field-of-view marker and hand-eye transform (`so101_perception`) |
+
+On the real arm, unfold it first from the folded rest (`so101_bringup`'s `so101_ready.py`).
+
 In RViz, drag the interactive marker or pick a named state (`zero`, `rest`) under *Goal State*, then *Plan & Execute*. IK is position only: with 5 joints, most 6-D poses cannot be reached, and an orientation weight made dragging fail.
+
+- **Planner** (*Context* tab): Pilz `PTP` gives straight joint-space moves, quick and repeatable. OMPL `RRTConnect` goes around obstacles, but its paths wander more. Pilz `LIN` moves the tool in a straight line; with 5 joints, not every line is reachable.
+- **Speed** (*Planning* tab): the velocity and acceleration scaling factors. The saved layout uses 0.8 and 0.5. Below about 0.3 the servos creep (commands below their deadband).
 
 | File | Content |
 |---|---|
 | `config/so101.srdf` | Groups `arm` (`base_link` → `gripper_frame_link`, 5 joints) and `gripper`, named states, end effector, disabled collision pairs |
 | `config/kinematics.yaml` | [pick_ik](https://github.com/PickNikRobotics/pick_ik), position only: the dragged marker sets where the gripper goes, not its orientation |
-| `config/joint_limits.yaml` | Position limits from the joint calibration, velocity/acceleration limits, 30 % default scaling |
+| `config/joint_limits.yaml` | Position limits from the joint calibration, 3 rad/s and 8 rad/s² for every joint, 50 % default scaling |
 | `config/moveit_controllers.yaml` | `arm_controller` and `gripper_controller` (`FollowJointTrajectory`, from `so101_bringup`) |
 | `config/pilz_cartesian_limits.yaml` | Cartesian limits for Pilz `LIN`/`CIRC` |
-| `config/moveit.rviz` | RViz with the MotionPlanning display |
-| `launch/demo.launch.py` | Includes `so101_bringup/launch/so101_control.launch.py`, starts `move_group` and RViz |
+| `config/moveit.rviz` | RViz with the MotionPlanning display, wrist camera image, FOV marker and camera axes |
+| `launch/demo.launch.py` | Includes `so101_bringup/launch/so101_control.launch.py` (and with `camera:=true` the wrist camera launch), starts `move_group` and RViz |
 
 Notes:
 

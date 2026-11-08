@@ -1,6 +1,6 @@
 # so101_bringup
 
-Launch files and configuration that start the SO-101: `robot_state_publisher`, the `controller_manager` with the hardware (mock for now), and the controllers.
+Launch files and configuration that start the SO-101: `robot_state_publisher`, the `controller_manager` with mock hardware or the real servo bus, and the controllers.
 
 ```bash
 ros2 launch so101_bringup so101_control.launch.py                          # mock hardware (default)
@@ -38,7 +38,6 @@ Tested on mock hardware from the real rest pose (lift −101.4°, elbow 91°, wr
 
 The robot description is `so101_description/urdf/so101.urdf.xacro` with `ros2_control:=true`. With `use_mock_hardware:=true` the joints are `mock_components/GenericSystem`, which mirrors each command to the state, starting at zero.
 
-Planned:
+With `use_mock_hardware:=false` they are `so101_hardware/SO101Hardware` on the servo bus.
 
-- The real hardware (`so101_hardware`).
-- Camera driver launch and a single "full system" launch for experiments.
+Planned: a single "full system" launch for the experiments (control, camera, perception, Behavior Tree). For now `so101_moveit_config`'s `demo.launch.py camera:=true` starts control, camera and MoveIt together.
