@@ -86,8 +86,8 @@ ros2 launch so101_description display.launch.py
 | [`so101_perception/`](so101_perception/) | Wrist camera publisher, calibration files; later ArUco, object detection | ✅ package (camera) |
 | [`so101_bt/`](so101_bt/) | Behavior Tree orchestration and handover logic | placeholder (phases 6, 7) |
 | [`so101_policy/`](so101_policy/) | Demonstration data and VLA policy inference | placeholder (phase 6) |
+| [`so101_dashboard/`](so101_dashboard/) | Local robot monitor (raylib + Dear ImGui): 3D view, tasks, wrist camera, joint telemetry | ✅ package |
 | [`tools/`](tools/) | Standalone helper scripts: Feetech bus driver, joint calibration, live joint states, teleop, camera calibration | active |
-| [`web/`](web/) | three.js URDF viewer for the portfolio | README |
 | [`docs/devlog/`](docs/devlog/) | Dated build log entries | active |
 | [`docs/research/`](docs/research/) | Hypotheses, metrics, experiment protocol | draft |
 | [`docs/media/`](docs/media/) | Small images and GIFs only | — |

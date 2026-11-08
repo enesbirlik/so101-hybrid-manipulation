@@ -16,7 +16,7 @@ ros2 launch so101_moveit_config demo.launch.py use_mock_hardware:=false
 
 - **Single owner of the serial port.** It opens it with an exclusive `flock`, like the Python tools, so a tool cannot open the bus while it runs, and the other way round.
 - **One bus cycle per control period** (100 Hz):
-  - one `SYNC READ` of position and speed of all six servos;
+  - one `SYNC READ` of position, speed, load, voltage, temperature and current of all six servos;
   - one `SYNC WRITE` of the goal positions.
 - **Ticks ↔ radians** from [`so101_bringup/config/so101_calibration.yaml`](../so101_bringup/config/so101_calibration.yaml): `joint_rad = direction * (ticks - zero) * 2π / 4096`. Commands are clamped to the calibrated range in ticks.
 - **Startup check** (`on_configure`): every servo answers and still has the homing offset of the calibration. Otherwise it refuses to start.
@@ -38,7 +38,22 @@ Set as `<param>` in the `<hardware>` block of [`so101.ros2_control.xacro`](../so
 | `max_bus_failures` | `5` | Consecutive failed reads before an error |
 | `p_coefficient`, `d_coefficient`, `i_coefficient` | `16`, `32`, `0` | Position loop gains, LeRobot's values for the SO-100/101. The factory P of 32 made the arm shake under MoveIt. They are written on activation with the EEPROM lock on, so they only change RAM: the factory values return after a power cycle |
 
+## State interfaces
+
+Per joint, from one SYNC READ of addresses 56 to 70:
+
+| Interface | Unit | Register |
+|---|---|---|
+| `position` | rad | 56, through the joint calibration |
+| `velocity` | rad/s | 58 |
+| `load` | % of the torque limit, signed like the joint | 60 |
+| `current` | A | 69 (6.5 mA steps) |
+| `temperature` | °C | 63 |
+| `voltage` | V | 62 |
+
+The last four are optional. They are read when the URDF declares all four on every joint, as [`so101.ros2_control.xacro`](../so101_description/urdf/so101.ros2_control.xacro) does. `joint_state_broadcaster` publishes them on `/dynamic_joint_states`, and `so101_dashboard` shows them.
+
 ## Planned
 
-- Load, current, temperature and voltage as state interfaces. Contact detection needs load or current, because the play hides contact from the encoders (devlog day 4).
+- Contact detection from load or current, because the play hides contact from the encoders (devlog day 4).
 - A torque-off / compliant mode for kinesthetic teaching.

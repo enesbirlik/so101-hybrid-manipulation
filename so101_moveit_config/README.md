@@ -11,6 +11,8 @@ ros2 launch so101_moveit_config demo.launch.py use_mock_hardware:=false camera:=
 |---|---|---|
 | `use_mock_hardware` | `true` | `false` drives the servos through `so101_hardware` |
 | `camera` | `false` | Wrist camera image, field-of-view marker and hand-eye transform (`so101_perception`) |
+| `rviz` | `true` | RViz with the MotionPlanning display |
+| `dashboard` | `false` | The [`so101_dashboard`](../so101_dashboard/) window |
 
 On the real arm, unfold it first from the folded rest (`so101_bringup`'s `so101_ready.py`).
 
