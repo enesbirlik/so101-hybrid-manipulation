@@ -59,6 +59,9 @@ RosLink::RosLink(State & state)
   joint_states_sub_ = create_subscription<sensor_msgs::msg::JointState>(
     "/joint_states", rclcpp::SensorDataQoS(),
     [this](const sensor_msgs::msg::JointState & msg) {on_joint_states(msg);});
+  dynamic_joint_states_sub_ = create_subscription<control_msgs::msg::DynamicJointState>(
+    "/dynamic_joint_states", rclcpp::SensorDataQoS(),
+    [this](const control_msgs::msg::DynamicJointState & msg) {on_dynamic_joint_states(msg);});
   description_sub_ = create_subscription<std_msgs::msg::String>(
     "/robot_description", rclcpp::QoS(1).transient_local().reliable(),
     [this](const std_msgs::msg::String & msg) {
@@ -130,6 +133,36 @@ void RosLink::on_image(const sensor_msgs::msg::CompressedImage & msg)
   state_.frame.height = rgb.rows;
   state_.frame.rgb.assign(rgb.data, rgb.data + rgb.total() * rgb.elemSize());
   ++state_.frame.version;
+}
+
+void RosLink::on_dynamic_joint_states(const control_msgs::msg::DynamicJointState & msg)
+{
+  const double t = now_s();
+  std::lock_guard<std::mutex> lock(state_.mutex);
+  for (size_t i = 0; i < msg.joint_names.size() && i < msg.interface_values.size(); ++i) {
+    const auto it = state_.joints.find(msg.joint_names[i]);
+    if (it == state_.joints.end()) {
+      continue;   // known from /joint_states first
+    }
+    Joint & j = it->second;
+    const auto & iv = msg.interface_values[i];
+    for (size_t k = 0; k < iv.interface_names.size() && k < iv.values.size(); ++k) {
+      const std::string & name = iv.interface_names[k];
+      const double v = iv.values[k];
+      if (name == "load") {
+        j.load = v;
+        j.load_hist.push(t, v);
+      } else if (name == "current") {
+        j.current = v;
+        j.current_hist.push(t, v * 1000.0);
+      } else if (name == "temperature") {
+        j.temperature = v;
+        j.temperature_hist.push(t, v);
+      } else if (name == "voltage") {
+        j.voltage = v;
+      }
+    }
+  }
 }
 
 void RosLink::on_joint_states(const sensor_msgs::msg::JointState & msg)

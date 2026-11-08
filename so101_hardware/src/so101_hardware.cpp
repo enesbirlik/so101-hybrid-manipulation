@@ -75,7 +75,14 @@ CallbackReturn SO101Hardware::on_init(const hardware_interface::HardwareComponen
     joints_.push_back(j);
     ids_.push_back(j.id);
   }
-  RCLCPP_INFO(LOGGER, "%zu joints from %s", joints_.size(), calibration_file.c_str());
+  // Telemetry interfaces are optional: all four on every joint, or none.
+  telemetry_ = std::all_of(info.joints.begin(), info.joints.end(), [](const auto & joint) {
+      return std::count_if(joint.state_interfaces.begin(), joint.state_interfaces.end(), [](const auto & si) {
+               return si.name == "load" || si.name == "current" || si.name == "temperature" || si.name == "voltage";
+             }) == 4;
+    });
+  RCLCPP_INFO(LOGGER, "%zu joints from %s%s", joints_.size(), calibration_file.c_str(),
+              telemetry_ ? ", with load/current/temperature/voltage" : "");
   return CallbackReturn::SUCCESS;
 }
 
@@ -111,8 +118,8 @@ CallbackReturn SO101Hardware::on_configure(const rclcpp_lifecycle::State &)
 
 CallbackReturn SO101Hardware::on_activate(const rclcpp_lifecycle::State &)
 {
-  std::vector<int> ticks, speed;
-  if (!read_bus(ticks, speed)) {
+  std::vector<ServoReading> servos;
+  if (!read_bus(servos)) {
     RCLCPP_FATAL(LOGGER, "cannot read the joints");
     return CallbackReturn::ERROR;
   }
@@ -121,7 +128,7 @@ CallbackReturn SO101Hardware::on_activate(const rclcpp_lifecycle::State &)
     // commands start at the present position, so nothing jumps.
     for (size_t i = 0; i < joints_.size(); ++i) {
       const auto & j = joints_[i];
-      const double q = to_rad(j, ticks[i]);
+      const double q = to_rad(j, servos[i].ticks);
       set_state(j.name + "/position", q);
       set_state(j.name + "/velocity", 0.0);
       set_command(j.name + "/position", q);
@@ -131,7 +138,7 @@ CallbackReturn SO101Hardware::on_activate(const rclcpp_lifecycle::State &)
       bus_->write_u8(j.id, I_COEFFICIENT, static_cast<uint8_t>(i_coefficient_));
       bus_->write_u8(j.id, ACCELERATION, static_cast<uint8_t>(acceleration_));
       bus_->write_u16(j.id, GOAL_SPEED, static_cast<uint16_t>(goal_speed_));
-      bus_->write_u16(j.id, GOAL_POSITION, static_cast<uint16_t>(ticks[i]));
+      bus_->write_u16(j.id, GOAL_POSITION, static_cast<uint16_t>(servos[i].ticks));
       bus_->write_u8(j.id, TORQUE_ENABLE, 1);
       bus_->write_u16(j.id, TORQUE_LIMIT, static_cast<uint16_t>(torque_limit_));
     }
@@ -169,15 +176,27 @@ int SO101Hardware::to_ticks(const JointCalibration & c, double rad) const
   return c.zero + static_cast<int>(std::lround(c.direction * rad * TICKS_PER_TURN / (2.0 * M_PI)));
 }
 
-bool SO101Hardware::read_bus(std::vector<int> & ticks, std::vector<int> & speed)
+bool SO101Hardware::read_bus(std::vector<ServoReading> & servos)
 {
+  // 56..70 in one go: position, speed, load, voltage, temperature, (64..68 unused here), current.
+  // 6 x 15 bytes, about 1.5 ms of the 10 ms period at 1 Mbps.
+  constexpr uint8_t SIZE = PRESENT_CURRENT + 2 - PRESENT_POSITION;
+  auto u16 = [](const std::vector<uint8_t> & d, uint8_t addr) {
+      return static_cast<uint16_t>(d[addr - PRESENT_POSITION] | (d[addr - PRESENT_POSITION + 1] << 8));
+    };
   try {
-    const auto data = bus_->sync_read(ids_, PRESENT_POSITION, 4);
-    ticks.clear();
-    speed.clear();
-    for (const auto & d : data) {
-      ticks.push_back(decode_sm(static_cast<uint16_t>(d[0] | (d[1] << 8)), 15));
-      speed.push_back(decode_sm(static_cast<uint16_t>(d[2] | (d[3] << 8)), 15));
+    const auto data = bus_->sync_read(ids_, PRESENT_POSITION, SIZE);
+    servos.clear();
+    for (size_t i = 0; i < data.size(); ++i) {
+      const auto & d = data[i];
+      ServoReading s;
+      s.ticks = decode_sm(u16(d, PRESENT_POSITION), 15);
+      s.speed = decode_sm(u16(d, PRESENT_POSITION + 2), 15);
+      s.load = joints_[i].direction * decode_sm(u16(d, PRESENT_LOAD), 10) * 0.1;
+      s.voltage = d[PRESENT_VOLTAGE - PRESENT_POSITION] * 0.1;
+      s.temperature = d[PRESENT_TEMPERATURE - PRESENT_POSITION];
+      s.current = std::abs(decode_sm(u16(d, PRESENT_CURRENT), 15)) * 0.0065;
+      servos.push_back(s);
     }
     return true;
   } catch (const FeetechError & e) {
@@ -188,8 +207,8 @@ bool SO101Hardware::read_bus(std::vector<int> & ticks, std::vector<int> & speed)
 
 return_type SO101Hardware::read(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  std::vector<int> ticks, speed;
-  if (!read_bus(ticks, speed)) {
+  std::vector<ServoReading> servos;
+  if (!read_bus(servos)) {
     // A missed reply now and then is normal on this bus; keep the last state.
     if (++failures_ >= max_failures_) {
       RCLCPP_FATAL(LOGGER, "%d bus reads failed in a row", failures_);
@@ -200,8 +219,15 @@ return_type SO101Hardware::read(const rclcpp::Time &, const rclcpp::Duration &)
   failures_ = 0;
   for (size_t i = 0; i < joints_.size(); ++i) {
     const auto & j = joints_[i];
-    set_state(j.name + "/position", to_rad(j, ticks[i]));
-    set_state(j.name + "/velocity", j.direction * speed[i] * 2.0 * M_PI / TICKS_PER_TURN);
+    const auto & s = servos[i];
+    set_state(j.name + "/position", to_rad(j, s.ticks));
+    set_state(j.name + "/velocity", j.direction * s.speed * 2.0 * M_PI / TICKS_PER_TURN);
+    if (telemetry_) {
+      set_state(j.name + "/load", s.load);
+      set_state(j.name + "/current", s.current);
+      set_state(j.name + "/temperature", s.temperature);
+      set_state(j.name + "/voltage", s.voltage);
+    }
   }
   return return_type::OK;
 }

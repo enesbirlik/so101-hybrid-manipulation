@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<!-- ros2_control interfaces of the six joints: position command, position and velocity state. -->
+<!-- ros2_control interfaces of the six joints: position command; position, velocity and servo telemetry state. -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:macro name="so101_ros2_control" params="name use_mock_hardware">
     <ros2_control name="${name}" type="system">
@@ -19,6 +19,11 @@
             <param name="initial_value">0.0</param>
           </state_interface>
           <state_interface name="velocity"/>
+          <!-- servo telemetry: load % (signed like the joint), current A, temperature deg C, voltage V -->
+          <state_interface name="load"/>
+          <state_interface name="current"/>
+          <state_interface name="temperature"/>
+          <state_interface name="voltage"/>
         </joint>
       </xacro:macro>
       <xacro:so101_joint joint="shoulder_pan"/>

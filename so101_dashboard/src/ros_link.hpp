@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include <control_msgs/msg/dynamic_joint_state.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
@@ -57,7 +58,15 @@ struct Joint
 {
   double position = NAN;  // rad
   double velocity = NAN;  // rad/s
-  History position_hist;
+  // servo telemetry from /dynamic_joint_states (NAN without it, e.g. on mock hardware)
+  double load = NAN;         // % of the torque limit
+  double current = NAN;      // A
+  double temperature = NAN;  // deg C
+  double voltage = NAN;      // V
+  History position_hist;     // deg
+  History load_hist;         // %
+  History current_hist;      // mA
+  History temperature_hist;  // deg C
 };
 
 // Latest decoded camera frame, RGB8.
@@ -100,12 +109,14 @@ public:
 
 private:
   void on_joint_states(const sensor_msgs::msg::JointState & msg);
+  void on_dynamic_joint_states(const control_msgs::msg::DynamicJointState & msg);
   void on_image(const sensor_msgs::msg::CompressedImage & msg);
   // Lists image topics and follows the camera panel's choice.
   void refresh_image_topics();
 
   State & state_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_states_sub_;
+  rclcpp::Subscription<control_msgs::msg::DynamicJointState>::SharedPtr dynamic_joint_states_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr description_sub_;
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr image_sub_;
   std::string subscribed_image_topic_;

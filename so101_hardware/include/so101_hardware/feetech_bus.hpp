@@ -28,6 +28,10 @@ constexpr uint8_t GOAL_POSITION = 42;     // u16
 constexpr uint8_t GOAL_SPEED = 46;        // u16, unit step/s, 0 = no limit
 constexpr uint8_t TORQUE_LIMIT = 48;      // u16, unit 0.1 %
 constexpr uint8_t PRESENT_POSITION = 56;  // u16, sign bit 15, followed by PRESENT_SPEED (u16, sign bit 15)
+constexpr uint8_t PRESENT_LOAD = 60;      // u16, sign bit 10, unit 0.1 %
+constexpr uint8_t PRESENT_VOLTAGE = 62;   // u8, unit 0.1 V
+constexpr uint8_t PRESENT_TEMPERATURE = 63;  // u8, deg C
+constexpr uint8_t PRESENT_CURRENT = 69;   // u16, sign bit 15, unit 6.5 mA
 
 constexpr int TICKS_PER_TURN = 4096;
 
