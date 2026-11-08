@@ -26,7 +26,7 @@ public:
   ~RobotView();  // before CloseWindow
 
   // Draws the "3D VIEW" window. Reloads the model when a new robot description arrives.
-  void draw(State & state);
+  void draw(State & state, bool * open);
 
   // World transforms (frame = URDF root) of every link for the given joint values.
   LinkPoses forward_kinematics(const JointValues & q) const;

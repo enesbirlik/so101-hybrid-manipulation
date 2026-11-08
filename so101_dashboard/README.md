@@ -9,13 +9,17 @@ ros2 launch so101_dashboard dashboard.launch.py    # next to a stack that is alr
 
 ## Panels
 
-| Panel | Shows | From |
-|---|---|---|
-| **3D VIEW** | The URDF posed from the joint states, the table grid, joint labels, the camera field of view. While a task runs: the plan's goal pose as a ghost and the tool path | `/robot_description`, `/joint_states`, TF, `/wrist_camera/fov`, `/display_planned_path` |
-| **CAMERA** | Any `sensor_msgs/CompressedImage` topic, chosen from a list, with its frame rate | the wrist camera now; processed images later |
-| **TASKS** | Task buttons, status, STOP, planner and speed settings, a log of results | `move_group` (`MoveGroup` action), the trajectory controllers |
-| **JOINTS** | Per joint: position, velocity, load, current, temperature, voltage, plus a 10 s plot of one of them | `/joint_states`, `/dynamic_joint_states` |
-| status bar | Link state, `/joint_states` rate, `ROS_DOMAIN_ID`, clock | |
+Every panel can be hidden and shown again: the **View** menu, the panel names in the menu bar, **F1–F6**, or the panel's close button. Panels dock anywhere by dragging their tab. *View → Reset layout* brings the default arrangement back.
+
+| Key | Panel | Shows | From |
+|---|---|---|---|
+| F1 | **3D VIEW** | The URDF posed from the joint states, the table grid, joint labels, the camera field of view. While a task runs: the plan's goal pose as a ghost and the tool path | `/robot_description`, `/joint_states`, TF, `/wrist_camera/fov`, `/display_planned_path` |
+| F2 | **CAMERA** | Any `sensor_msgs/CompressedImage` topic, chosen from a list. Hidden, it unsubscribes and decodes nothing | the wrist camera now; processed images later |
+| F3 | **TASKS** | Task buttons, status, STOP; planner and speed under *motion settings* | `move_group` (`MoveGroup` action), the trajectory controllers |
+| F4 | **TASK LOG** | Results of past tasks, newest first | |
+| F5 | **JOINTS** | Per joint: position, velocity, load, current, temperature, voltage. Right-click a column header to hide or show columns (a *TREND* sparkline column is hidden by default) | `/joint_states`, `/dynamic_joint_states` |
+| F6 | **PLOTS** | One metric for all joints over 10, 30 or 60 s; click a joint in the legend to hide it; *pause* freezes the plot | the same |
+| | status bar | Link state, `/joint_states` rate, camera rate, `ROS_DOMAIN_ID`, clock | |
 
 The 3D view also checks its own forward kinematics against TF at the gripper frame (`FK/TF … mm`). It should read 0.0.
 
@@ -34,7 +38,7 @@ One task runs at a time. Named states are read from `so101_moveit_config/config/
 
 - **3D view:** drag to orbit, right drag to pan, wheel to zoom, double-click to reset. *labels* and *scanlines* toggle the overlays.
 - **F12** or `kill -USR1 <pid>` saves `so101_dashboard.png` into the working directory.
-- The panels can be docked anywhere. The layout is saved in `~/.local/state/so101_dashboard/imgui.ini`; delete that file to get the default back.
+- Layout, open panels and table columns are saved in `~/.local/state/so101_dashboard/imgui.ini`.
 
 ## Build
 
@@ -51,6 +55,7 @@ cd ~/so101_ws && colcon build --packages-select so101_dashboard
 | `src/robot_view.*` | 3D view: URDF and STL loading, forward kinematics, rim-light shader |
 | `src/camera_view.*` | Camera panel |
 | `src/tasks.*` | `TaskRunner`: MoveIt goals, scripts, STOP |
-| `src/panels.*` | Joints, tasks and status bar panels |
+| `src/panels.*` | Joints, plots, tasks, task log and status bar panels |
+| `src/layout.*` | Menu bar, panel visibility (F1–F6, saved), dock space and default layout |
 | `src/theme.*` | Colours, style, font |
 | `fonts/` | [Share Tech Mono](https://fonts.google.com/specimen/Share+Tech+Mono), SIL Open Font License ([`OFL.txt`](fonts/OFL.txt)) |

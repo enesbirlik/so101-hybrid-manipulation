@@ -103,7 +103,7 @@ void RosLink::refresh_image_topics()
     if (state_.image_topic.empty() && std::find(topics.begin(), topics.end(), preferred) != topics.end()) {
       state_.image_topic = preferred;
     }
-    wanted = state_.image_topic;
+    wanted = state_.camera_shown ? state_.image_topic : "";
   }
   if (wanted == subscribed_image_topic_) {
     return;

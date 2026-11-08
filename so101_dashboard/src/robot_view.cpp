@@ -520,12 +520,12 @@ void RobotView::update_fov(State & state)
   }
 }
 
-void RobotView::draw(State & state)
+void RobotView::draw(State & state, bool * open)
 {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-  const bool open = ImGui::Begin(WIN_VIEW);
+  const bool visible = ImGui::Begin(WIN_VIEW, open);
   ImGui::PopStyleVar();
-  if (!open) {
+  if (!visible) {
     ImGui::End();
     return;
   }

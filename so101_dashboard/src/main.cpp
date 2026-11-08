@@ -7,13 +7,13 @@
 #include <thread>
 
 #include <imgui.h>
-#include <imgui_internal.h>
 #include <implot.h>
 #include <raylib.h>
 #include <rlImGui.h>
 #include <rclcpp/rclcpp.hpp>
 
 #include "camera_view.hpp"
+#include "layout.hpp"
 #include "panels.hpp"
 #include "robot_view.hpp"
 #include "ros_link.hpp"
@@ -37,36 +37,6 @@ std::string layout_file()
   const std::filesystem::path dir = std::filesystem::path(home ? home : ".") / ".local/state/so101_dashboard";
   std::filesystem::create_directories(dir);
   return (dir / "imgui.ini").string();
-}
-
-// The dock space fills the window above the status bar. The first run (no saved layout) splits it:
-// 3D view left, tasks and camera right, joints along the bottom.
-void dock_space()
-{
-  const ImGuiViewport * vp = ImGui::GetMainViewport();
-  ImGui::SetNextWindowPos(vp->WorkPos);
-  ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, vp->WorkSize.y - STATUS_BAR_H));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4, 4));
-  ImGui::Begin("##dock_host", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
-    ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings |
-    ImGuiWindowFlags_NoNav);
-  ImGui::PopStyleVar();
-  const ImGuiID id = ImGui::GetID("main_dock");
-  if (ImGui::DockBuilderGetNode(id) == nullptr) {
-    ImGui::DockBuilderAddNode(id, ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(id, ImGui::GetContentRegionAvail());
-    ImGuiID top, bottom, left, right, right_top, right_bottom;
-    ImGui::DockBuilderSplitNode(id, ImGuiDir_Down, 0.36f, &bottom, &top);
-    ImGui::DockBuilderSplitNode(top, ImGuiDir_Left, 0.58f, &left, &right);
-    ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.6f, &right_top, &right_bottom);
-    ImGui::DockBuilderDockWindow(sd::WIN_VIEW, left);
-    ImGui::DockBuilderDockWindow(sd::WIN_CAMERA, right_top);
-    ImGui::DockBuilderDockWindow(sd::WIN_TASKS, right_bottom);
-    ImGui::DockBuilderDockWindow(sd::WIN_JOINTS, bottom);
-    ImGui::DockBuilderFinish(id);
-  }
-  ImGui::DockSpace(id);
-  ImGui::End();
 }
 
 }  // namespace
@@ -96,6 +66,7 @@ int main(int argc, char ** argv)
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   const std::string ini = layout_file();
   io.IniFilename = ini.c_str();
+  sd::Layout layout;
   auto view = std::make_unique<sd::RobotView>();
   auto camera = std::make_unique<sd::CameraView>();
 
@@ -103,11 +74,33 @@ int main(int argc, char ** argv)
     BeginDrawing();
     ClearBackground(sd::theme::to_raylib(sd::theme::BG));
     rlImGuiBegin();
-    dock_space();
-    view->draw(state);
-    camera->draw(state);
-    sd::draw_tasks(state, tasks);
-    sd::draw_joints(state);
+    layout.begin_frame(STATUS_BAR_H);
+    // a closed panel is not drawn at all (and a closed camera panel stops the image subscription)
+    if (bool * open = layout.open(sd::WIN_VIEW); *open) {
+      view->draw(state, open);
+    }
+    {
+      bool * open = layout.open(sd::WIN_CAMERA);
+      {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        state.camera_shown = *open;
+      }
+      if (*open) {
+        camera->draw(state, open);
+      }
+    }
+    if (bool * open = layout.open(sd::WIN_TASKS); *open) {
+      sd::draw_tasks(state, tasks, open);
+    }
+    if (bool * open = layout.open(sd::WIN_TASK_LOG); *open) {
+      sd::draw_task_log(state, open);
+    }
+    if (bool * open = layout.open(sd::WIN_JOINTS); *open) {
+      sd::draw_joints(state, open);
+    }
+    if (bool * open = layout.open(sd::WIN_PLOTS); *open) {
+      sd::draw_plots(state, open);
+    }
     sd::draw_status_bar(state, STATUS_BAR_H);
     rlImGuiEnd();
     EndDrawing();

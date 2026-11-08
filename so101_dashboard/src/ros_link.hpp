@@ -29,7 +29,7 @@ double now_s();  // steady clock, seconds since start
 class History
 {
 public:
-  History() : History(1200) {}
+  History() : History(6000) {}   // 60 s at 100 Hz
   explicit History(size_t capacity) : t_(capacity), v_(capacity) {}
   void push(double t, double v);
   // Copies the samples in time order.
@@ -123,6 +123,7 @@ struct State
 
   std::vector<std::string> image_topics;   // every sensor_msgs/CompressedImage topic
   std::string image_topic;                 // the one to show, chosen in the camera panel
+  bool camera_shown = true;                // panel closed: no subscription, no decoding
   CameraFrame frame;
   RateMeter image_rate;
   LineMarker fov;

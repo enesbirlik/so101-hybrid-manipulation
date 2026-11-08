@@ -55,9 +55,9 @@ void CameraView::upload(const CameraFrame & frame)
   version_ = frame.version;
 }
 
-void CameraView::draw(State & state)
+void CameraView::draw(State & state, bool * open)
 {
-  if (!ImGui::Begin(WIN_CAMERA)) {
+  if (!ImGui::Begin(WIN_CAMERA, open)) {
     ImGui::End();
     return;
   }

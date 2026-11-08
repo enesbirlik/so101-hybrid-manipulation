@@ -59,7 +59,8 @@ add_executable(dashboard
   src/panels.cpp
   src/robot_view.cpp
   src/camera_view.cpp
-  src/tasks.cpp)
+  src/tasks.cpp
+  src/layout.cpp)
 target_link_libraries(dashboard dashboard_gui ${OpenCV_LIBS} tinyxml2::tinyxml2)
 target_compile_options(dashboard PRIVATE -Wall -Wextra)   # ours only, not the fetched libraries
 target_compile_definitions(dashboard PRIVATE NO_FONT_AWESOME)

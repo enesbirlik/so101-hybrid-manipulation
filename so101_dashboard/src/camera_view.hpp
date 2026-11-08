@@ -12,7 +12,7 @@ class CameraView
 {
 public:
   ~CameraView();   // before CloseWindow
-  void draw(State & state);
+  void draw(State & state, bool * open);
 
 private:
   void upload(const CameraFrame & frame);
