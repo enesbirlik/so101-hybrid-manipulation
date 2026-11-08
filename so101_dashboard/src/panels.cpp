@@ -25,6 +25,7 @@ constexpr double TEMP_HOT_C = 60.0;
 constexpr double LOAD_WARN = 60.0;    // % of the torque limit
 constexpr double VOLT_LOW = 11.0;     // 12 V supply
 constexpr double TREND_SECONDS = 10.0;
+constexpr size_t MAX_PLOT_POINTS = 1500;   // per joint
 
 // What the plots (and the table's trend column) show.
 enum Metric {POSITION, LOAD, CURRENT, TEMPERATURE};
@@ -194,9 +195,15 @@ void draw_plots(State & state, bool * open)
       ts.emplace_back();
       vs.emplace_back();
       history(state.joints.at(name), metric).ordered(ts.back(), vs.back());
-      for (double & t : ts.back()) {
-        t -= now;   // seconds before now
+      // no more points than pixels: keep every k-th sample
+      const size_t k = std::max<size_t>(1, ts.back().size() / MAX_PLOT_POINTS);
+      size_t n = 0;
+      for (size_t i = 0; i < ts.back().size(); i += k, ++n) {
+        ts.back()[n] = ts.back()[i] - now;   // seconds before now
+        vs.back()[n] = vs.back()[i];
       }
+      ts.back().resize(n);
+      vs.back().resize(n);
     }
   }
   // click a joint in the legend to hide it
@@ -316,6 +323,14 @@ void draw_tasks(State & state, TaskRunner & tasks, bool * open)
     tasks.start_process("UNFOLD", {script});
   }
   ImGui::SetItemTooltip("out of the folded rest, elbow first (so101_ready.py)");
+  ImGui::SameLine();
+  if (ImGui::Button("LIFT", size)) {
+    static const std::string script =
+      ament_index_cpp::get_package_prefix("so101_bringup") + "/lib/so101_bringup/so101_lift.py";
+    tasks.start_process("LIFT", {script});
+  }
+  ImGui::SetItemTooltip("hand straight up 4 cm, without MoveIt: when it rests on the table\n"
+    "(MoveIt then sees it inside the table and will not plan) (so101_lift.py)");
   for (const auto & b : buttons) {
     // wrap onto the next line when the panel is narrow
     if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + size.x <

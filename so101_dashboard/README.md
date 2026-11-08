@@ -28,6 +28,7 @@ The 3D view also checks its own forward kinematics against TF at the gripper fra
 | Task | Does |
 |---|---|
 | UNFOLD | Runs `so101_bringup`'s `so101_ready.py`: out of the folded rest, elbow first |
+| LIFT | Runs `so101_bringup`'s `so101_lift.py`: the hand straight up 4 cm, without MoveIt. For a hand resting on the table, which MoveIt sees inside the table and will not plan from |
 | ZERO, REST | The SRDF named states of `arm`, planned and executed by `move_group` |
 | OPEN, CLOSE | The `gripper` named states |
 | STOP | Cancels the MoveIt goal and every goal on the trajectory controllers, and stops a running script: the arm holds where it is |

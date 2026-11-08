@@ -52,6 +52,8 @@ add_library(dashboard_gui STATIC
 target_include_directories(dashboard_gui SYSTEM PUBLIC ${imgui_SOURCE_DIR} ${rlimgui_SOURCE_DIR} ${implot_SOURCE_DIR})
 target_link_libraries(dashboard_gui PUBLIC raylib)
 target_compile_options(dashboard_gui PRIVATE -w)
+# 32-bit indices: a 60 s plot of six joints is more than ImGui's default 65536 vertices per window
+target_compile_definitions(dashboard_gui PUBLIC "ImDrawIdx=unsigned int")
 
 add_executable(dashboard
   src/main.cpp

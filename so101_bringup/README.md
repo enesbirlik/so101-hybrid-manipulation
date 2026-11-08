@@ -13,6 +13,16 @@ ros2 launch so101_bringup so101_control.launch.py use_mock_hardware:=false  # th
 | `config/ros2_controllers.yaml` | `joint_state_broadcaster`, `arm_controller` (5 joints) and `gripper_controller` (`JointTrajectoryController`s, position command, 100 Hz), and `torque_controller` (the torque switch, see `so101_hardware`) |
 | `launch/so101_control.launch.py` | `robot_state_publisher` + `ros2_control_node` + controller spawners |
 | `scripts/so101_ready.py` | Takes the arm out of the folded rest (elbow first) so MoveIt can plan |
+| `scripts/so101_lift.py` | Lifts the hand straight up (`--dz` cm, default 4), keeping the gripper orientation, without MoveIt |
+
+## Hand on the table
+
+A hand resting on the table is, in the model, a few millimetres to over 2 cm inside it: the joint play takes up downwards and the encoders do not see it (devlog day 4; with the torque off, 22 mm measured on 2026-11-08). MoveIt refuses to plan from a start state in collision. `so101_lift.py` moves the tool point straight up first, with forward kinematics from `/robot_description` and a joint trajectory for `arm_controller`; only `shoulder_lift`, `elbow_flex` and `wrist_flex` move:
+
+```bash
+install/so101_bringup/lib/so101_bringup/so101_lift.py            # 4 cm
+install/so101_bringup/lib/so101_bringup/so101_lift.py --dz 6 --dry-run
+```
 
 ## Leaving the folded rest
 
