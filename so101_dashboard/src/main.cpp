@@ -17,6 +17,7 @@
 #include "panels.hpp"
 #include "robot_view.hpp"
 #include "ros_link.hpp"
+#include "tasks.hpp"
 #include "theme.hpp"
 
 namespace sd = so101_dashboard;
@@ -76,6 +77,7 @@ int main(int argc, char ** argv)
   std::signal(SIGUSR1, [](int) {screenshot_requested = true;});
   sd::State state;
   auto node = std::make_shared<sd::RosLink>(state);
+  sd::TaskRunner tasks(node, state);
   rclcpp::executors::MultiThreadedExecutor executor;
   executor.add_node(node);
   std::thread ros_thread([&executor] {executor.spin();});
@@ -104,7 +106,7 @@ int main(int argc, char ** argv)
     dock_space();
     view->draw(state);
     camera->draw(state);
-    sd::draw_placeholder(sd::WIN_TASKS, "tasks: next step");
+    sd::draw_tasks(state, tasks);
     sd::draw_joints(state);
     sd::draw_status_bar(state, STATUS_BAR_H);
     rlImGuiEnd();

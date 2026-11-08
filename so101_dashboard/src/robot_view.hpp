@@ -45,7 +45,9 @@ private:
   int primitive(const std::string & key, Mesh mesh);
   void handle_input(bool hovered, bool active);
   void update_camera();
-  void render(const LinkPoses & poses);
+  void render(const LinkPoses & poses, const LinkPoses & ghost);
+  // The last plan: link poses at its goal (empty when there is none to show); fills path_.
+  LinkPoses ghost_poses(const Ghost & ghost, const JointValues & q, bool task_running);
   void draw_robot(const LinkPoses & poses, Color base, Color rim);
   void draw_table(const LinkPoses & poses);
   void draw_labels(const LinkPoses & poses, const JointValues & q, ImVec2 origin, float scale) const;
@@ -74,6 +76,7 @@ private:
   double fk_error_mm_ = -1.0;   // FK vs TF at the gripper frame, -1 = not checked yet
   double fk_checked_at_ = -10.0;
   std::vector<Vector3> fov_world_;   // line segment end points
+  std::vector<Vector3> path_;        // tool (gripper_frame_link) positions along the last plan
 };
 
 }  // namespace so101_dashboard

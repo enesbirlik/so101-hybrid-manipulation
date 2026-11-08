@@ -8,6 +8,9 @@
 #include <imgui.h>
 #include <implot.h>
 
+#include <ament_index_cpp/get_package_prefix.hpp>
+
+#include "tasks.hpp"
 #include "theme.hpp"
 
 namespace so101_dashboard
@@ -145,6 +148,126 @@ void draw_joints(State & state)
         ImPlot::EndPlot();
       }
       ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  ImGui::End();
+}
+
+void draw_tasks(State & state, TaskRunner & tasks)
+{
+  struct Planner {const char * label, * pipeline, * planner;};
+  static const Planner planners[] = {
+    {"Pilz PTP", "pilz_industrial_motion_planner", "PTP"}, {"OMPL RRTConnect", "ompl", "RRTConnect"}};
+  static int planner = 0;
+  static MotionOptions options;
+  if (!ImGui::Begin(WIN_TASKS)) {
+    ImGui::End();
+    return;
+  }
+  TaskStatus task;
+  std::deque<TaskLogEntry> log;
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    task = state.task;
+    log = state.task_log;
+  }
+  const double now = now_s();
+
+  // status line + STOP
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextColored(theme::DIM, "STATUS");
+  ImGui::SameLine();
+  if (task.running) {
+    const bool blink = static_cast<int>(now * 2) % 2 == 0;
+    ImGui::TextColored(blink ? theme::AMBER : theme::DIM, "*");
+    ImGui::SameLine();
+    ImGui::TextColored(theme::AMBER, "%s", task.label.c_str());
+    ImGui::SameLine();
+    ImGui::TextColored(theme::DIM, "%s  %.1f s", task.phase.c_str(), now - task.started);
+  } else {
+    ImGui::TextColored(theme::OK, "IDLE");
+  }
+  const float stop_w = 110;
+  ImGui::SameLine(ImGui::GetWindowWidth() - stop_w - 12);
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(theme::ALERT.x, theme::ALERT.y, theme::ALERT.z, 0.25f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(theme::ALERT.x, theme::ALERT.y, theme::ALERT.z, 0.5f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, theme::ALERT);
+  ImGui::PushStyleColor(ImGuiCol_Border, theme::ALERT);
+  if (ImGui::Button("STOP", ImVec2(stop_w, 0))) {
+    tasks.stop();
+  }
+  ImGui::PopStyleColor(4);
+
+  // motion settings
+  ImGui::SetNextItemWidth(170);
+  if (ImGui::Combo("##planner", &planner, [](void *, int i) {return planners[i].label;}, nullptr,
+    IM_ARRAYSIZE(planners)))
+  {
+    options.pipeline = planners[planner].pipeline;
+    options.planner = planners[planner].planner;
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(130);
+  float vel = static_cast<float>(options.velocity), acc = static_cast<float>(options.acceleration);
+  if (ImGui::SliderFloat("vel", &vel, 0.1f, 1.0f, "%.2f")) {
+    options.velocity = vel;
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(130);
+  if (ImGui::SliderFloat("acc", &acc, 0.1f, 1.0f, "%.2f")) {
+    options.acceleration = acc;
+  }
+  ImGui::SameLine();
+  const bool online = tasks.move_group_online();
+  ImGui::TextColored(online ? theme::OK : theme::DIM, online ? "move_group online" : "move_group offline");
+  ImGui::Separator();
+
+  // task buttons
+  struct TaskButton {const char * label, * group, * state, * tip;};
+  static const TaskButton buttons[] = {
+    {"ZERO", "arm", "zero", "all joints to 0"},
+    {"REST", "arm", "rest", "fold into the rest pose"},
+    {"OPEN", "gripper", "open", "open the gripper"},
+    {"CLOSE", "gripper", "closed", "close the gripper"}};
+  const ImVec2 size(118, 40);
+  ImGui::BeginDisabled(task.running);
+  if (ImGui::Button("UNFOLD", size)) {
+    static const std::string script =
+      ament_index_cpp::get_package_prefix("so101_bringup") + "/lib/so101_bringup/so101_ready.py";
+    tasks.start_process("UNFOLD", {script});
+  }
+  ImGui::SetItemTooltip("out of the folded rest, elbow first (so101_ready.py)");
+  for (const auto & b : buttons) {
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!online);
+    if (ImGui::Button(b.label, size)) {
+      tasks.start_named(b.label, b.group, b.state, options);
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("%s (%s/%s)", b.tip, b.group, b.state);
+  }
+  ImGui::EndDisabled();
+  ImGui::Separator();
+
+  // log
+  if (ImGui::BeginTable("log", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn("TIME", ImGuiTableColumnFlags_WidthFixed, 80);
+    ImGui::TableSetupColumn("TASK", ImGuiTableColumnFlags_WidthFixed, 90);
+    ImGui::TableSetupColumn("RESULT");
+    ImGui::TableSetupColumn("TIME s", ImGuiTableColumnFlags_WidthFixed, 60);
+    ImGui::TableHeadersRow();
+    for (const auto & e : log) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextColored(theme::DIM, "%s", e.clock.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(e.label.c_str());
+      ImGui::TableNextColumn();
+      ImGui::TextColored(e.ok ? theme::OK : theme::ALERT, "%s", e.result.c_str());
+      ImGui::TableNextColumn();
+      ImGui::Text("%6.1f", e.duration);
     }
     ImGui::EndTable();
   }

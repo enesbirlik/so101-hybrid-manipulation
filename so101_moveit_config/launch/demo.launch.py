@@ -1,4 +1,4 @@
-"""MoveIt 2 for the SO-101: the control stack from so101_bringup, move_group and RViz."""
+"""MoveIt 2 for the SO-101: the control stack from so101_bringup, move_group, and RViz and/or the dashboard."""
 
 import os
 
@@ -34,6 +34,9 @@ def generate_launch_description():
                               description="mock_components/GenericSystem instead of the servo bus"),
         DeclareLaunchArgument("camera", default_value="false",
                               description="Start the wrist camera (image in RViz, hand-eye transform in TF)"),
+        DeclareLaunchArgument("rviz", default_value="true", description="Start RViz with the MotionPlanning display"),
+        DeclareLaunchArgument("dashboard", default_value="false",
+                              description="Start the so101_dashboard window (3D view, tasks, camera, telemetry)"),
         IncludeLaunchDescription(
             PathJoinSubstitution([FindPackageShare("so101_bringup"), "launch", "so101_control.launch.py"]),
             launch_arguments={"use_mock_hardware": use_mock_hardware}.items(),
@@ -49,8 +52,15 @@ def generate_launch_description():
             output="screen",
         ),
         Node(
+            package="so101_dashboard",
+            executable="dashboard",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("dashboard")),
+        ),
+        Node(
             package="rviz2",
             executable="rviz2",
+            condition=IfCondition(LaunchConfiguration("rviz")),
             arguments=["-d", PathJoinSubstitution([FindPackageShare("so101_moveit_config"), "config", "moveit.rviz"])],
             parameters=[
                 moveit_config.robot_description,

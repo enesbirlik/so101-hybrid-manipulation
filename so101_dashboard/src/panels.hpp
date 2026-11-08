@@ -11,7 +11,10 @@ constexpr const char * WIN_TASKS = "TASKS";
 constexpr const char * WIN_CAMERA = "CAMERA";
 constexpr const char * WIN_JOINTS = "JOINTS";
 
+class TaskRunner;
+
 void draw_joints(State & state);
+void draw_tasks(State & state, TaskRunner & tasks);
 void draw_placeholder(const char * window, const char * text);
 // Bottom strip across the whole window.
 void draw_status_bar(State & state, float height);

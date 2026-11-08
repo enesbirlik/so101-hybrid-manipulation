@@ -23,6 +23,7 @@ namespace
 
 constexpr int SUPERSAMPLE = 2;   // the render texture has no MSAA: draw at 2x, show scaled down
 constexpr float GRID_STEP = 0.05f;
+constexpr double GHOST_LINGER_S = 3.0;   // the plan stays this long after the task ends
 
 // Lambert key light plus a rim term that lights silhouettes: reads as a hologram.
 const char * VERTEX_SHADER = R"(#version 330
@@ -383,13 +384,28 @@ void RobotView::draw_robot(const LinkPoses & poses, Color base, Color rim)
   }
 }
 
-void RobotView::render(const LinkPoses & poses)
+void RobotView::render(const LinkPoses & poses, const LinkPoses & ghost)
 {
   BeginTextureMode(target_);
   ClearBackground(Color{6, 10, 15, 255});
   BeginMode3D(camera_);
   draw_table(poses);
   draw_robot(poses, Color{14, 34, 42, 255}, theme::to_raylib(theme::CYAN));
+  if (!ghost.empty()) {
+    // translucent, and not hiding what is behind it
+    rlDrawRenderBatchActive();
+    rlDisableDepthMask();
+    draw_robot(ghost, Color{60, 18, 40, 60}, theme::to_raylib(ImVec4(theme::ROSE.x, theme::ROSE.y, theme::ROSE.z, 0.9f)));
+    rlDrawRenderBatchActive();
+    rlEnableDepthMask();
+    const Color trail = theme::to_raylib(theme::ROSE);
+    for (size_t i = 1; i < path_.size(); ++i) {
+      DrawLine3D(path_[i - 1], path_[i], trail);
+    }
+    if (!path_.empty()) {
+      DrawSphere(path_.back(), 0.006f, trail);
+    }
+  }
   const Color fov = theme::to_raylib(ImVec4(theme::ROSE.x, theme::ROSE.y, theme::ROSE.z, 0.8f));
   for (size_t i = 0; i + 1 < fov_world_.size(); i += 2) {
     DrawLine3D(fov_world_[i], fov_world_[i + 1], fov);
@@ -452,6 +468,32 @@ void RobotView::check_fk(State & state, const LinkPoses & poses)
   }
 }
 
+LinkPoses RobotView::ghost_poses(const Ghost & ghost, const JointValues & q, bool task_running)
+{
+  path_.clear();
+  if (ghost.received < 0 || ghost.positions.empty() ||
+    (!task_running && now_s() - ghost.received > GHOST_LINGER_S))
+  {
+    return {};
+  }
+  // the goal pose, and the tool path through every plan point
+  auto at = [&](const std::vector<double> & p) {
+      JointValues gq = q;
+      for (size_t j = 0; j < ghost.joints.size() && j < p.size(); ++j) {
+        gq[ghost.joints[j]] = p[j];
+      }
+      return forward_kinematics(gq);
+    };
+  for (const auto & p : ghost.positions) {
+    const LinkPoses poses = at(p);
+    const auto tool = poses.find("gripper_frame_link");
+    if (tool != poses.end()) {
+      path_.push_back(translation(tool->second));
+    }
+  }
+  return at(ghost.positions.back());
+}
+
 void RobotView::update_fov(State & state)
 {
   LineMarker fov;
@@ -488,6 +530,8 @@ void RobotView::draw(State & state)
     return;
   }
   JointValues q;
+  Ghost ghost;
+  bool task_running;
   {
     std::lock_guard<std::mutex> lock(state.mutex);
     if (state.description_version != description_version_) {
@@ -497,6 +541,8 @@ void RobotView::draw(State & state)
     for (const auto & [name, joint] : state.joints) {
       q[name] = joint.position;
     }
+    ghost = state.ghost;
+    task_running = state.task.running;
   }
   if (!model_) {
     ImGui::SetCursorPos(ImVec2(12, 36));
@@ -526,7 +572,7 @@ void RobotView::draw(State & state)
     ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
   handle_input(ImGui::IsItemHovered(), ImGui::IsItemActive());
   update_camera();
-  render(poses);
+  render(poses, ghost_poses(ghost, q, task_running));
 
   ImGui::SetCursorScreenPos(pos);
   rlImGuiImageRect(&target_.texture, static_cast<int>(avail.x), static_cast<int>(avail.y),

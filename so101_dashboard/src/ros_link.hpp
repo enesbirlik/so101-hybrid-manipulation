@@ -85,6 +85,32 @@ struct LineMarker
   double received = -1.0;
 };
 
+// The plan move_group published last (/display_planned_path), for the ghost robot.
+struct Ghost
+{
+  std::vector<std::string> joints;
+  std::vector<double> times;                   // s from the start
+  std::vector<std::vector<double>> positions;  // per point, in `joints` order
+  double received = -1.0;
+};
+
+struct TaskStatus
+{
+  bool running = false;
+  std::string label;
+  std::string phase;     // move_group feedback ("PLANNING", "MONITOR", ...) or "running"
+  double started = 0.0;
+};
+
+struct TaskLogEntry
+{
+  std::string clock;     // wall time it started, HH:MM:SS
+  std::string label;
+  std::string result;
+  double duration = 0.0;
+  bool ok = false;
+};
+
 struct State
 {
   std::mutex mutex;
@@ -100,6 +126,10 @@ struct State
   CameraFrame frame;
   RateMeter image_rate;
   LineMarker fov;
+
+  TaskStatus task;
+  std::deque<TaskLogEntry> task_log;   // newest first
+  Ghost ghost;
 };
 
 class RosLink : public rclcpp::Node
