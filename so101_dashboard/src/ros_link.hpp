@@ -2,6 +2,7 @@
 // which the render loop reads under the mutex.
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <deque>
 #include <map>
@@ -11,7 +12,9 @@
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
+#include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <visualization_msgs/msg/marker.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -57,15 +60,37 @@ struct Joint
   History position_hist;
 };
 
+// Latest decoded camera frame, RGB8.
+struct CameraFrame
+{
+  std::vector<uint8_t> rgb;
+  int width = 0, height = 0;
+  uint64_t version = 0;
+};
+
+// A LINE_LIST marker (the camera field of view): point pairs in `frame`.
+struct LineMarker
+{
+  std::string frame;
+  std::vector<std::array<float, 3>> points;
+  double received = -1.0;
+};
+
 struct State
 {
   std::mutex mutex;
-  std::vector<std::string> joint_order;  // as first seen on /joint_states
+  std::vector<std::string> joint_order;  // base to gripper
   std::map<std::string, Joint> joints;
   RateMeter joint_states_rate;
   std::string robot_description;
   uint64_t description_version = 0;   // bumped on every new description
   tf2_ros::Buffer * tf = nullptr;      // thread-safe on its own, no mutex needed
+
+  std::vector<std::string> image_topics;   // every sensor_msgs/CompressedImage topic
+  std::string image_topic;                 // the one to show, chosen in the camera panel
+  CameraFrame frame;
+  RateMeter image_rate;
+  LineMarker fov;
 };
 
 class RosLink : public rclcpp::Node
@@ -75,10 +100,18 @@ public:
 
 private:
   void on_joint_states(const sensor_msgs::msg::JointState & msg);
+  void on_image(const sensor_msgs::msg::CompressedImage & msg);
+  // Lists image topics and follows the camera panel's choice.
+  void refresh_image_topics();
 
   State & state_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_states_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr description_sub_;
+  rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr image_sub_;
+  std::string subscribed_image_topic_;
+  rclcpp::Subscription<visualization_msgs::msg::Marker>::SharedPtr fov_sub_;
+  rclcpp::TimerBase::SharedPtr topics_timer_;
+  rclcpp::CallbackGroup::SharedPtr image_group_;   // decoding must not hold up the joint states
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
 };

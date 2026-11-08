@@ -390,6 +390,10 @@ void RobotView::render(const LinkPoses & poses)
   BeginMode3D(camera_);
   draw_table(poses);
   draw_robot(poses, Color{14, 34, 42, 255}, theme::to_raylib(theme::CYAN));
+  const Color fov = theme::to_raylib(ImVec4(theme::ROSE.x, theme::ROSE.y, theme::ROSE.z, 0.8f));
+  for (size_t i = 0; i + 1 < fov_world_.size(); i += 2) {
+    DrawLine3D(fov_world_[i], fov_world_[i + 1], fov);
+  }
   EndMode3D();
   if (scanlines_) {
     for (int y = 0; y < target_h_; y += 3 * SUPERSAMPLE) {
@@ -448,6 +452,32 @@ void RobotView::check_fk(State & state, const LinkPoses & poses)
   }
 }
 
+void RobotView::update_fov(State & state)
+{
+  LineMarker fov;
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    fov = state.fov;
+  }
+  fov_world_.clear();
+  // the camera node republishes it every second; older means the camera is gone
+  if (fov.received < 0 || now_s() - fov.received > 3.0 || !state.tf || !model_) {
+    return;
+  }
+  try {
+    const auto t = state.tf->lookupTransform(model_->getRoot()->name, fov.frame, tf2::TimePointZero);
+    urdf::Pose p;
+    p.position = urdf::Vector3(t.transform.translation.x, t.transform.translation.y, t.transform.translation.z);
+    p.rotation = urdf::Rotation(t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z,
+      t.transform.rotation.w);
+    const Matrix m = pose_matrix(p);
+    for (const auto & pt : fov.points) {
+      fov_world_.push_back(Vector3Transform(Vector3{pt[0], pt[1], pt[2]}, m));
+    }
+  } catch (const std::exception &) {
+  }
+}
+
 void RobotView::draw(State & state)
 {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -476,6 +506,7 @@ void RobotView::draw(State & state)
   }
   const LinkPoses poses = forward_kinematics(q);
   check_fk(state, poses);
+  update_fov(state);
 
   const ImVec2 pos = ImGui::GetCursorScreenPos();
   const ImVec2 avail = ImGui::GetContentRegionAvail();

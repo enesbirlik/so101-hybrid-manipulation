@@ -13,6 +13,7 @@
 #include <rlImGui.h>
 #include <rclcpp/rclcpp.hpp>
 
+#include "camera_view.hpp"
 #include "panels.hpp"
 #include "robot_view.hpp"
 #include "ros_link.hpp"
@@ -94,6 +95,7 @@ int main(int argc, char ** argv)
   const std::string ini = layout_file();
   io.IniFilename = ini.c_str();
   auto view = std::make_unique<sd::RobotView>();
+  auto camera = std::make_unique<sd::CameraView>();
 
   while (!WindowShouldClose() && rclcpp::ok()) {
     BeginDrawing();
@@ -101,7 +103,7 @@ int main(int argc, char ** argv)
     rlImGuiBegin();
     dock_space();
     view->draw(state);
-    sd::draw_placeholder(sd::WIN_CAMERA, "camera: next step");
+    camera->draw(state);
     sd::draw_placeholder(sd::WIN_TASKS, "tasks: next step");
     sd::draw_joints(state);
     sd::draw_status_bar(state, STATUS_BAR_H);
@@ -113,6 +115,7 @@ int main(int argc, char ** argv)
   }
 
   view.reset();   // GPU resources go before the window
+  camera.reset();
   ImPlot::DestroyContext();
   rlImGuiShutdown();
   CloseWindow();

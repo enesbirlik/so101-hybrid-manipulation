@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <chrono>
 
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+
 namespace so101_dashboard
 {
 
@@ -66,6 +69,67 @@ RosLink::RosLink(State & state)
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, this, false);
   state_.tf = tf_buffer_.get();
+
+  fov_sub_ = create_subscription<visualization_msgs::msg::Marker>(
+    "/wrist_camera/fov", 1, [this](const visualization_msgs::msg::Marker & msg) {
+      std::lock_guard<std::mutex> lock(state_.mutex);
+      state_.fov.frame = msg.header.frame_id;
+      state_.fov.points.clear();
+      for (const auto & p : msg.points) {
+        state_.fov.points.push_back({static_cast<float>(p.x), static_cast<float>(p.y), static_cast<float>(p.z)});
+      }
+      state_.fov.received = now_s();
+    });
+  image_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+  topics_timer_ = create_wall_timer(std::chrono::milliseconds(500), [this] {refresh_image_topics();});
+}
+
+void RosLink::refresh_image_topics()
+{
+  static const char * preferred = "/wrist_camera/image_raw/compressed";
+  std::vector<std::string> topics;
+  for (const auto & [name, types] : get_topic_names_and_types()) {
+    if (std::find(types.begin(), types.end(), "sensor_msgs/msg/CompressedImage") != types.end()) {
+      topics.push_back(name);
+    }
+  }
+  std::string wanted;
+  {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    state_.image_topics = topics;
+    if (state_.image_topic.empty() && std::find(topics.begin(), topics.end(), preferred) != topics.end()) {
+      state_.image_topic = preferred;
+    }
+    wanted = state_.image_topic;
+  }
+  if (wanted == subscribed_image_topic_) {
+    return;
+  }
+  image_sub_.reset();
+  subscribed_image_topic_ = wanted;
+  if (!wanted.empty()) {
+    rclcpp::SubscriptionOptions options;
+    options.callback_group = image_group_;
+    image_sub_ = create_subscription<sensor_msgs::msg::CompressedImage>(
+      wanted, rclcpp::SensorDataQoS(),
+      [this](const sensor_msgs::msg::CompressedImage & msg) {on_image(msg);}, options);
+  }
+}
+
+void RosLink::on_image(const sensor_msgs::msg::CompressedImage & msg)
+{
+  cv::Mat bgr = cv::imdecode(msg.data, cv::IMREAD_COLOR);
+  if (bgr.empty()) {
+    return;
+  }
+  cv::Mat rgb;
+  cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
+  std::lock_guard<std::mutex> lock(state_.mutex);
+  state_.image_rate.tick(now_s());
+  state_.frame.width = rgb.cols;
+  state_.frame.height = rgb.rows;
+  state_.frame.rgb.assign(rgb.data, rgb.data + rgb.total() * rgb.elemSize());
+  ++state_.frame.version;
 }
 
 void RosLink::on_joint_states(const sensor_msgs::msg::JointState & msg)

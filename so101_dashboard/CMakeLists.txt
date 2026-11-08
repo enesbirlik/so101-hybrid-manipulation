@@ -11,6 +11,8 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(urdf REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc)
 
 # raylib, Dear ImGui, rlImGui and ImPlot are not packaged for ROS: fetched at pinned commits on the first build.
 include(FetchContent)
@@ -50,12 +52,13 @@ add_executable(dashboard
   src/ros_link.cpp
   src/theme.cpp
   src/panels.cpp
-  src/robot_view.cpp)
-target_link_libraries(dashboard dashboard_gui)
+  src/robot_view.cpp
+  src/camera_view.cpp)
+target_link_libraries(dashboard dashboard_gui ${OpenCV_LIBS})
 target_compile_options(dashboard PRIVATE -Wall -Wextra)   # ours only, not the fetched libraries
 target_compile_definitions(dashboard PRIVATE NO_FONT_AWESOME)
 target_compile_definitions(dashboard_gui PRIVATE NO_FONT_AWESOME)
-ament_target_dependencies(dashboard rclcpp ament_index_cpp sensor_msgs std_msgs tf2_ros urdf)
+ament_target_dependencies(dashboard rclcpp ament_index_cpp sensor_msgs std_msgs tf2_ros urdf visualization_msgs)
 
 install(TARGETS dashboard DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY fonts launch DESTINATION share/${PROJECT_NAME})
