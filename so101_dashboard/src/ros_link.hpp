@@ -12,6 +12,9 @@
 
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <tf2_ros/buffer.h>
+#include <tf2_ros/transform_listener.h>
 
 namespace so101_dashboard
 {
@@ -60,6 +63,9 @@ struct State
   std::vector<std::string> joint_order;  // as first seen on /joint_states
   std::map<std::string, Joint> joints;
   RateMeter joint_states_rate;
+  std::string robot_description;
+  uint64_t description_version = 0;   // bumped on every new description
+  tf2_ros::Buffer * tf = nullptr;      // thread-safe on its own, no mutex needed
 };
 
 class RosLink : public rclcpp::Node
@@ -72,6 +78,9 @@ private:
 
   State & state_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_states_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr description_sub_;
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;
 };
 
 }  // namespace so101_dashboard

@@ -56,6 +56,16 @@ RosLink::RosLink(State & state)
   joint_states_sub_ = create_subscription<sensor_msgs::msg::JointState>(
     "/joint_states", rclcpp::SensorDataQoS(),
     [this](const sensor_msgs::msg::JointState & msg) {on_joint_states(msg);});
+  description_sub_ = create_subscription<std_msgs::msg::String>(
+    "/robot_description", rclcpp::QoS(1).transient_local().reliable(),
+    [this](const std_msgs::msg::String & msg) {
+      std::lock_guard<std::mutex> lock(state_.mutex);
+      state_.robot_description = msg.data;
+      ++state_.description_version;
+    });
+  tf_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+  tf_listener_ = std::make_unique<tf2_ros::TransformListener>(*tf_buffer_, this, false);
+  state_.tf = tf_buffer_.get();
 }
 
 void RosLink::on_joint_states(const sensor_msgs::msg::JointState & msg)

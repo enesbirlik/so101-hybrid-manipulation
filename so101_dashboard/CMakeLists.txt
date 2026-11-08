@@ -8,6 +8,9 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(urdf REQUIRED)
 
 # raylib, Dear ImGui, rlImGui and ImPlot are not packaged for ROS: fetched at pinned commits on the first build.
 include(FetchContent)
@@ -46,12 +49,13 @@ add_executable(dashboard
   src/main.cpp
   src/ros_link.cpp
   src/theme.cpp
-  src/panels.cpp)
+  src/panels.cpp
+  src/robot_view.cpp)
 target_link_libraries(dashboard dashboard_gui)
 target_compile_options(dashboard PRIVATE -Wall -Wextra)   # ours only, not the fetched libraries
 target_compile_definitions(dashboard PRIVATE NO_FONT_AWESOME)
 target_compile_definitions(dashboard_gui PRIVATE NO_FONT_AWESOME)
-ament_target_dependencies(dashboard rclcpp ament_index_cpp sensor_msgs)
+ament_target_dependencies(dashboard rclcpp ament_index_cpp sensor_msgs std_msgs tf2_ros urdf)
 
 install(TARGETS dashboard DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY fonts launch DESTINATION share/${PROJECT_NAME})

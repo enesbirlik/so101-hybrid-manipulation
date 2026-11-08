@@ -14,6 +14,7 @@
 #include <rclcpp/rclcpp.hpp>
 
 #include "panels.hpp"
+#include "robot_view.hpp"
 #include "ros_link.hpp"
 #include "theme.hpp"
 
@@ -92,13 +93,14 @@ int main(int argc, char ** argv)
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   const std::string ini = layout_file();
   io.IniFilename = ini.c_str();
+  auto view = std::make_unique<sd::RobotView>();
 
   while (!WindowShouldClose() && rclcpp::ok()) {
     BeginDrawing();
     ClearBackground(sd::theme::to_raylib(sd::theme::BG));
     rlImGuiBegin();
     dock_space();
-    sd::draw_placeholder(sd::WIN_VIEW, "3D view: next step");
+    view->draw(state);
     sd::draw_placeholder(sd::WIN_CAMERA, "camera: next step");
     sd::draw_placeholder(sd::WIN_TASKS, "tasks: next step");
     sd::draw_joints(state);
@@ -110,6 +112,7 @@ int main(int argc, char ** argv)
     }
   }
 
+  view.reset();   // GPU resources go before the window
   ImPlot::DestroyContext();
   rlImGuiShutdown();
   CloseWindow();
