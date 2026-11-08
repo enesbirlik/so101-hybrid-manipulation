@@ -54,6 +54,9 @@ TaskRunner::TaskRunner(rclcpp::Node::SharedPtr node, State & state)
       state_.ghost = std::move(g);
     });
   process_timer_ = node_->create_wall_timer(std::chrono::milliseconds(200), [this] {poll_process();});
+  torque_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>("/torque_controller/commands", 1);
+  switch_controller_ = node_->create_client<controller_manager_msgs::srv::SwitchController>(
+    "/controller_manager/switch_controller");
   load_srdf();
 }
 
@@ -110,6 +113,66 @@ void TaskRunner::begin(const std::string & label)
 {
   std::lock_guard<std::mutex> lock(state_.mutex);
   state_.task = TaskStatus{true, label, "starting", now_s()};
+}
+
+void TaskRunner::log(const std::string & label, const std::string & result, bool ok)
+{
+  char clock[16];
+  const std::time_t now = std::time(nullptr);
+  std::strftime(clock, sizeof(clock), "%H:%M:%S", std::localtime(&now));
+  std::lock_guard<std::mutex> lock(state_.mutex);
+  state_.task_log.push_front(TaskLogEntry{clock, label, result, 0.0, ok});
+  if (state_.task_log.size() > LOG_LENGTH) {
+    state_.task_log.pop_back();
+  }
+}
+
+void TaskRunner::set_torque(bool on)
+{
+  if (!on) {
+    stop();
+  }
+  std_msgs::msg::Float64MultiArray msg;
+  msg.data = {on ? 1.0 : 0.0};
+  torque_pub_->publish(msg);
+  if (!on) {
+    log("TORQUE OFF", "sent", true);
+    return;
+  }
+  // give the hardware a few cycles to switch, then restart the controllers
+  std::lock_guard<std::mutex> lock(mutex_);
+  restart_timer_ = node_->create_wall_timer(std::chrono::milliseconds(300), [this] {
+        restart_timer_->cancel();
+        restart_controllers();
+      });
+}
+
+void TaskRunner::restart_controllers()
+{
+  using Switch = controller_manager_msgs::srv::SwitchController;
+  static const std::vector<std::string> controllers{"arm_controller", "gripper_controller"};
+  if (!switch_controller_->service_is_ready()) {
+    log("TORQUE ON", "no controller_manager", false);
+    return;
+  }
+  auto request = std::make_shared<Switch::Request>();
+  request->deactivate_controllers = controllers;
+  request->strictness = Switch::Request::STRICT;
+  request->timeout = rclcpp::Duration::from_seconds(2.0);
+  switch_controller_->async_send_request(request, [this](rclcpp::Client<Switch>::SharedFuture done) {
+      if (!done.get()->ok) {
+        log("TORQUE ON", "controllers not stopped", false);
+        return;
+      }
+      auto again = std::make_shared<Switch::Request>();
+      again->activate_controllers = controllers;
+      again->strictness = Switch::Request::STRICT;
+      again->timeout = rclcpp::Duration::from_seconds(2.0);
+      switch_controller_->async_send_request(again, [this](rclcpp::Client<Switch>::SharedFuture result) {
+        log("TORQUE ON", result.get()->ok ? "on, controllers restarted" : "controllers not restarted",
+        result.get()->ok);
+      });
+    });
 }
 
 void TaskRunner::finish(bool ok, const std::string & result)

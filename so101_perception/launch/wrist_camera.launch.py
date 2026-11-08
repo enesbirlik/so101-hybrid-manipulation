@@ -8,6 +8,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -18,12 +19,15 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("scale", default_value="0.5", description="published image size relative to 1280x720"),
+        DeclareLaunchArgument("fps", default_value="15.0",
+                              description="publish rate; the camera delivers 30 fps in good light, ~25 in dim light"),
         Node(
             package="so101_perception",
             executable="wrist_camera_node.py",
             parameters=[{
                 "calibration_file": os.path.join(config, "wrist_camera_fisheye.yaml"),
-                "scale": LaunchConfiguration("scale"),
+                "scale": ParameterValue(LaunchConfiguration("scale"), value_type=float),
+                "fps": ParameterValue(LaunchConfiguration("fps"), value_type=float),   # "30" would be an int
             }],
         ),
         Node(

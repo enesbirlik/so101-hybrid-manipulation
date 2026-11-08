@@ -32,6 +32,13 @@
       <xacro:so101_joint joint="wrist_flex"/>
       <xacro:so101_joint joint="wrist_roll"/>
       <xacro:so101_joint joint="gripper"/>
+      <!-- all servos' torque: 1 = on, 0 = off (the arm hangs free, e.g. to teach it by hand) -->
+      <gpio name="torque">
+        <command_interface name="enable"/>
+        <state_interface name="enable">
+          <param name="initial_value">1.0</param>
+        </state_interface>
+      </gpio>
     </ros2_control>
   </xacro:macro>
 </robot>

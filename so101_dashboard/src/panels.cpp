@@ -227,11 +227,14 @@ void draw_tasks(State & state, TaskRunner & tasks, bool * open)
     return;
   }
   TaskStatus task;
+  double torque;
   {
     std::lock_guard<std::mutex> lock(state.mutex);
     task = state.task;
+    torque = state.torque;
   }
   const double now = now_s();
+  const bool limp = torque == 0.0;   // NAN (no torque switch) counts as on
 
   // status line + STOP
   ImGui::AlignTextToFramePadding();
@@ -258,6 +261,45 @@ void draw_tasks(State & state, TaskRunner & tasks, bool * open)
   }
   ImGui::PopStyleColor(4);
 
+  // torque: switching it off takes a second click within CONFIRM_S, because the arm drops
+  static double confirm_until = 0.0;
+  constexpr double CONFIRM_S = 3.0;
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextColored(theme::DIM, "TORQUE");
+  ImGui::SameLine();
+  if (std::isnan(torque)) {
+    ImGui::TextColored(theme::DIM, "?");
+  } else {
+    ImGui::TextColored(limp ? theme::AMBER : theme::OK, limp ? "OFF  (the arm moves freely)" : "ON");
+  }
+  ImGui::SameLine(ImGui::GetWindowWidth() - 260 - 12);
+  ImGui::BeginDisabled(std::isnan(torque));
+  if (limp) {
+    if (ImGui::Button("TORQUE ON", ImVec2(260, 0))) {
+      tasks.set_torque(true);
+    }
+    ImGui::SetItemTooltip("holds the present pose; the controllers restart");
+  } else {
+    const bool armed = now < confirm_until;
+    if (armed) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(theme::AMBER.x, theme::AMBER.y, theme::AMBER.z, 0.35f));
+      ImGui::PushStyleColor(ImGuiCol_Border, theme::AMBER);
+    }
+    if (ImGui::Button(armed ? "HOLD THE ARM - CLICK AGAIN" : "TORQUE OFF", ImVec2(260, 0))) {
+      if (armed) {
+        tasks.set_torque(false);
+        confirm_until = 0.0;
+      } else {
+        confirm_until = now + CONFIRM_S;
+      }
+    }
+    if (armed) {
+      ImGui::PopStyleColor(2);
+    }
+    ImGui::SetItemTooltip("all servos go limp: support the arm first");
+  }
+  ImGui::EndDisabled();
+
   // task buttons
   struct TaskButton {const char * label, * group, * state, * tip;};
   static const TaskButton buttons[] = {
@@ -267,7 +309,7 @@ void draw_tasks(State & state, TaskRunner & tasks, bool * open)
     {"CLOSE", "gripper", "closed", "close the gripper"}};
   const bool online = tasks.move_group_online();
   const ImVec2 size(118, 40);
-  ImGui::BeginDisabled(task.running);
+  ImGui::BeginDisabled(task.running || limp);
   if (ImGui::Button("UNFOLD", size)) {
     static const std::string script =
       ament_index_cpp::get_package_prefix("so101_bringup") + "/lib/so101_bringup/so101_ready.py";
@@ -362,9 +404,10 @@ void draw_status_bar(State & state, float height)
   ImGui::Begin("##status", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking |
     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
   const double now = now_s();
-  double hz, last, camera_hz;
+  double hz, last, camera_hz, torque;
   {
     std::lock_guard<std::mutex> lock(state.mutex);
+    torque = state.torque;
     hz = state.joint_states_rate.hz(now);
     last = state.joint_states_rate.last();
     camera_hz = state.image_rate.hz(now);
@@ -381,6 +424,10 @@ void draw_status_bar(State & state, float height)
   snprintf(buf, sizeof(buf), "%4.1f fps", camera_hz);
   label_value("CAMERA", buf, camera_hz > 10 ? theme::OK : camera_hz > 0 ? theme::AMBER : theme::DIM);
   ImGui::SameLine(0, 30);
+  if (!std::isnan(torque)) {
+    label_value("TORQUE", torque == 0.0 ? "OFF" : "ON", torque == 0.0 ? theme::AMBER : theme::OK);
+    ImGui::SameLine(0, 30);
+  }
   const char * domain = std::getenv("ROS_DOMAIN_ID");
   label_value("DOMAIN", domain ? domain : "0", theme::TEXT);
 

@@ -140,6 +140,15 @@ void RosLink::on_dynamic_joint_states(const control_msgs::msg::DynamicJointState
   const double t = now_s();
   std::lock_guard<std::mutex> lock(state_.mutex);
   for (size_t i = 0; i < msg.joint_names.size() && i < msg.interface_values.size(); ++i) {
+    if (msg.joint_names[i] == "torque") {   // the torque GPIO
+      const auto & iv = msg.interface_values[i];
+      for (size_t k = 0; k < iv.interface_names.size() && k < iv.values.size(); ++k) {
+        if (iv.interface_names[k] == "enable") {
+          state_.torque = iv.values[k];
+        }
+      }
+      continue;
+    }
     const auto it = state_.joints.find(msg.joint_names[i]);
     if (it == state_.joints.end()) {
       continue;   // known from /joint_states first

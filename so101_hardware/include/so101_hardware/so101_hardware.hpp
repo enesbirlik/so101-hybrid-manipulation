@@ -54,6 +54,7 @@ private:
   double to_rad(const JointCalibration & c, int ticks) const;
   int to_ticks(const JointCalibration & c, double rad) const;
   bool read_bus(std::vector<ServoReading> & servos);
+  void set_torque(bool on);
 
   std::vector<JointCalibration> joints_;
   std::vector<uint8_t> ids_;
@@ -68,6 +69,14 @@ private:
   int max_failures_ = 5;      // consecutive bus failures before read() reports an error
   int failures_ = 0;
   bool telemetry_ = false;    // the URDF declares load/current/temperature/voltage state interfaces
+  bool torque_gpio_ = false;  // the URDF declares the torque/enable GPIO
+  bool torque_on_ = false;
+  // After the torque comes back on, hold the pose it came on at until the position commands are
+  // back near it (the controllers restart and command the present pose): a stale command from
+  // before the torque went off would make the arm jump.
+  bool resync_ = false;
+  std::vector<int> hold_ticks_;
+  std::vector<int> present_ticks_;   // from the last read
 };
 
 }  // namespace so101_hardware

@@ -31,6 +31,7 @@ The 3D view also checks its own forward kinematics against TF at the gripper fra
 | ZERO, REST | The SRDF named states of `arm`, planned and executed by `move_group` |
 | OPEN, CLOSE | The `gripper` named states |
 | STOP | Cancels the MoveIt goal and every goal on the trajectory controllers, and stops a running script: the arm holds where it is |
+| TORQUE OFF / ON | All servos limp or holding (`so101_hardware` torque switch). OFF stops any motion first and needs a second click within 3 s: support the arm. ON holds the present pose and restarts the trajectory controllers. Tasks are disabled while the torque is off |
 
 One task runs at a time. Named states are read from `so101_moveit_config/config/so101.srdf`. The planner (Pilz PTP or OMPL RRTConnect) and the velocity and acceleration scaling apply to the next task.
 

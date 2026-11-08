@@ -7,6 +7,8 @@ controller_manager:
       type: joint_trajectory_controller/JointTrajectoryController
     gripper_controller:
       type: joint_trajectory_controller/JointTrajectoryController
+    torque_controller:
+      type: forward_command_controller/ForwardCommandController
 
 arm_controller:
   ros__parameters:
@@ -23,3 +25,11 @@ gripper_controller:
     joints: [gripper]
     command_interfaces: [position]
     state_interfaces: [position, velocity]
+
+# /torque_controller/commands (std_msgs/Float64MultiArray): [1.0] torque on, [0.0] off.
+# After switching it back on, restart arm_controller and gripper_controller so they command the
+# present pose; until then the hardware holds the pose the torque came on at.
+torque_controller:
+  ros__parameters:
+    joints: [torque]
+    interface_name: enable

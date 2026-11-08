@@ -53,7 +53,13 @@ Per joint, from one SYNC READ of addresses 56 to 70:
 
 The last four are optional. They are read when the URDF declares all four on every joint, as [`so101.ros2_control.xacro`](../so101_description/urdf/so101.ros2_control.xacro) does. `joint_state_broadcaster` publishes them on `/dynamic_joint_states`, and `so101_dashboard` shows them.
 
+## Torque switch
+
+The GPIO `torque/enable` (command and state: 1 on, 0 off) switches all servos' torque, for example to move the arm by hand. `so101_bringup`'s `torque_controller` writes it: `[1.0]` or `[0.0]` on `/torque_controller/commands`.
+
+- **Off:** torque off on all servos, and no goal positions are sent. The arm drops unless it is supported.
+- **On:** goal = present position, then torque on. The pose at that moment is held until the position commands come back within 2° of it. The trajectory controllers would otherwise still command the pose from before the torque went off, and the arm would jump there. Restarting `arm_controller` and `gripper_controller` makes them command the present pose; the `so101_dashboard` TORQUE ON button does that.
+
 ## Planned
 
 - Contact detection from load or current, because the play hides contact from the encoders (devlog day 4).
-- A torque-off / compliant mode for kinesthetic teaching.

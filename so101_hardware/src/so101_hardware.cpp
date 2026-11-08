@@ -19,6 +19,7 @@ using hardware_interface::return_type;
 namespace
 {
 const rclcpp::Logger LOGGER = rclcpp::get_logger("SO101Hardware");
+constexpr int RESYNC_TICKS = 23;   // 2 deg
 
 std::string param(const hardware_interface::HardwareInfo & info, const std::string & key, const std::string & fallback)
 {
@@ -81,8 +82,13 @@ CallbackReturn SO101Hardware::on_init(const hardware_interface::HardwareComponen
                return si.name == "load" || si.name == "current" || si.name == "temperature" || si.name == "voltage";
              }) == 4;
     });
-  RCLCPP_INFO(LOGGER, "%zu joints from %s%s", joints_.size(), calibration_file.c_str(),
-              telemetry_ ? ", with load/current/temperature/voltage" : "");
+  torque_gpio_ = std::any_of(info.gpios.begin(), info.gpios.end(), [](const auto & gpio) {
+      return gpio.name == "torque" && !gpio.command_interfaces.empty() &&
+             gpio.command_interfaces.front().name == "enable";
+    });
+  RCLCPP_INFO(LOGGER, "%zu joints from %s%s%s", joints_.size(), calibration_file.c_str(),
+              telemetry_ ? ", with load/current/temperature/voltage" : "",
+              torque_gpio_ ? ", torque switch on torque/enable" : "");
   return CallbackReturn::SUCCESS;
 }
 
@@ -145,6 +151,16 @@ CallbackReturn SO101Hardware::on_activate(const rclcpp_lifecycle::State &)
   } catch (const FeetechError & e) {
     RCLCPP_FATAL(LOGGER, "%s", e.what());
     return CallbackReturn::ERROR;
+  }
+  present_ticks_.clear();
+  for (const auto & s : servos) {
+    present_ticks_.push_back(s.ticks);
+  }
+  torque_on_ = true;
+  resync_ = false;
+  if (torque_gpio_) {
+    set_command("torque/enable", 1.0);
+    set_state("torque/enable", 1.0);
   }
   failures_ = 0;
   RCLCPP_INFO(LOGGER, "torque on, holding the present pose (P %d, D %d, I %d)",
@@ -217,9 +233,11 @@ return_type SO101Hardware::read(const rclcpp::Time &, const rclcpp::Duration &)
     return return_type::OK;
   }
   failures_ = 0;
+  present_ticks_.clear();
   for (size_t i = 0; i < joints_.size(); ++i) {
     const auto & j = joints_[i];
     const auto & s = servos[i];
+    present_ticks_.push_back(s.ticks);
     set_state(j.name + "/position", to_rad(j, s.ticks));
     set_state(j.name + "/velocity", j.direction * s.speed * 2.0 * M_PI / TICKS_PER_TURN);
     if (telemetry_) {
@@ -229,19 +247,71 @@ return_type SO101Hardware::read(const rclcpp::Time &, const rclcpp::Duration &)
       set_state(j.name + "/voltage", s.voltage);
     }
   }
+  if (torque_gpio_) {
+    set_state("torque/enable", torque_on_ ? 1.0 : 0.0);
+  }
   return return_type::OK;
+}
+
+void SO101Hardware::set_torque(bool on)
+{
+  try {
+    if (on) {
+      // goal = present pose first, so the servos do not pull towards an old goal
+      std::vector<std::vector<uint8_t>> goals;
+      for (const int t : present_ticks_) {
+        goals.push_back({static_cast<uint8_t>(t & 0xFF), static_cast<uint8_t>(t >> 8)});
+      }
+      bus_->sync_write(ids_, GOAL_POSITION, goals);
+      hold_ticks_ = present_ticks_;
+      resync_ = true;
+    }
+    bus_->sync_write(ids_, TORQUE_ENABLE, std::vector<std::vector<uint8_t>>(ids_.size(), {on ? uint8_t{1} : uint8_t{0}}));
+    torque_on_ = on;
+    RCLCPP_INFO(LOGGER, on ? "torque on, holding the present pose" : "torque off: the arm moves freely");
+  } catch (const FeetechError & e) {
+    // the command stays: tried again next cycle
+    RCLCPP_WARN_THROTTLE(LOGGER, *rclcpp::Clock::make_shared(), 1000, "torque switch: %s", e.what());
+  }
 }
 
 return_type SO101Hardware::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  std::vector<std::vector<uint8_t>> goals;
-  for (const auto & j : joints_) {
+  if (torque_gpio_) {
+    const double enable = get_command<double>("torque/enable");
+    if (std::isfinite(enable) && (enable > 0.5) != torque_on_ && present_ticks_.size() == joints_.size()) {
+      set_torque(enable > 0.5);
+    }
+  }
+  if (!torque_on_) {
+    return return_type::OK;  // limp: no goals to send
+  }
+  std::vector<int> targets;
+  bool near_hold = true;
+  for (size_t i = 0; i < joints_.size(); ++i) {
+    const auto & j = joints_[i];
     const double cmd = get_command<double>(j.name + "/position");
     if (!std::isfinite(cmd)) {
       return return_type::OK;  // no command yet
     }
     // Never past the calibrated range (the servos' own position limits as well).
-    const int t = std::clamp(to_ticks(j, cmd), j.range_min, j.range_max);
+    targets.push_back(std::clamp(to_ticks(j, cmd), j.range_min, j.range_max));
+    if (resync_ && std::abs(targets.back() - hold_ticks_[i]) > RESYNC_TICKS) {
+      near_hold = false;
+    }
+  }
+  if (resync_) {
+    if (near_hold) {
+      resync_ = false;
+      RCLCPP_INFO(LOGGER, "position commands match the held pose again");
+    } else {
+      targets = hold_ticks_;
+      RCLCPP_WARN_THROTTLE(LOGGER, *rclcpp::Clock::make_shared(), 5000,
+        "holding: the position commands are not at the pose the torque came on at; restart the controllers");
+    }
+  }
+  std::vector<std::vector<uint8_t>> goals;
+  for (const int t : targets) {
     goals.push_back({static_cast<uint8_t>(t & 0xFF), static_cast<uint8_t>(t >> 8)});
   }
   try {

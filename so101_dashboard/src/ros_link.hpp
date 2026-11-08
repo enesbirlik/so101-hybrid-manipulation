@@ -130,6 +130,7 @@ struct State
 
   TaskStatus task;
   std::deque<TaskLogEntry> task_log;   // newest first
+  double torque = NAN;                 // torque/enable state: 1 on, 0 off, NAN unknown
   Ghost ghost;
 };
 
