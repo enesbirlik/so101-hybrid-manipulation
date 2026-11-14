@@ -23,6 +23,11 @@ WRITE = 0x03
 # Control table (STS3215). EEPROM is below address 40, RAM from 40 on.
 MIN_POSITION_LIMIT = 9      # u16
 MAX_POSITION_LIMIT = 11     # u16
+P_COEFFICIENT = 21          # u8, position loop gains (factory 32 / 32 / 0)
+D_COEFFICIENT = 22          # u8
+I_COEFFICIENT = 23          # u8
+CW_DEAD_ZONE = 26           # u8, ticks around the goal where the motor does not push
+CCW_DEAD_ZONE = 27          # u8
 HOMING_OFFSET = 31          # u16, sign-magnitude (bit 11); present = raw - offset
 OPERATING_MODE = 33         # u8, 0 = position
 TORQUE_ENABLE = 40          # u8
