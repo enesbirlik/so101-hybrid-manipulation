@@ -6,7 +6,7 @@ find_package(ament_cmake REQUIRED)
 install(DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
 )
-install(PROGRAMS scripts/so101_ready.py scripts/so101_lift.py
+install(PROGRAMS scripts/so101_ready.py scripts/so101_lift.py scripts/so101_teach_check.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

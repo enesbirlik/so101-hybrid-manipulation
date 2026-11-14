@@ -14,6 +14,22 @@ ros2 launch so101_bringup so101_control.launch.py use_mock_hardware:=false  # th
 | `launch/so101_control.launch.py` | `robot_state_publisher` + `ros2_control_node` + controller spawners |
 | `scripts/so101_ready.py` | Takes the arm out of the folded rest (elbow first) so MoveIt can plan |
 | `scripts/so101_lift.py` | Lifts the hand straight up (`--dz` cm, default 4), keeping the gripper orientation, without MoveIt |
+| `scripts/so101_teach_check.py` | Kinesthetic teaching check: taught (torque off) vs held and replayed (torque on) poses |
+
+## Teaching by hand
+
+The encoders read the same with the torque on or off, so one joint calibration serves both. A taught pose can still come back differently, for two mechanical reasons:
+- under load the servo stops short of its goal (P gain, deadband);
+- play the encoders do not see.
+
+`so101_teach_check.py` measures the first; for the second, measure the tool with a ruler (`--pause`). Results are saved in `~/so101_data/teach_check/`.
+
+```bash
+S=install/so101_bringup/lib/so101_bringup/so101_teach_check.py
+$S sag                                   # hold a pose, torque on, let go: how far each joint moves
+$S record                                # torque off, Enter saves each pose
+$S replay ~/so101_data/teach_check/<time>-poses.yaml --rounds 3 --pause
+```
 
 ## Hand on the table
 
