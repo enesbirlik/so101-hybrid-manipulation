@@ -22,7 +22,8 @@ joints:
     homing_offset: -933
     range_min: 787
     range_max: 3166
-    zero: 1929   # was 2048; +10.5 deg from the hand-eye table fit, 2026-10-28 (devlog day 3)
+    zero: 1993   # 2048 at first; 1929 (+10.5 deg, hand-eye table fit, 2026-10-28); 1993 = -5.65 deg from
+                 # that, from 8 ruler gaps under the hand, torque on, 2026-11-14 (~/so101_data/ruler_gaps)
     direction: 1
   elbow_flex:
     id: 3

@@ -2,10 +2,12 @@
 # held-out runs: 9.89 px with the CAD origins, 4.77 px with these
 # Joint origins (parent link -> joint frame) that so101_new_calib.urdf reads; cad = the upstream values.
 # Data: hand_eye_s4 (2 runs, after tightening the wrist_flex screws).
-# table_z: the table surface in base_link [m] for these origins. The camera cannot see it (the board
-# pose is free), so it comes from ruler gaps under the hand, torque on, at 6 poses: 12.5 +- 1.2 mm below
-# the bottom of the base meshes (-2.4 mm). Measure again after a new fit.
-table_z: -0.0149
+# table_z: the table surface in base_link [m]. The base stands on the table, so this is the bottom of
+# the base meshes. It was -0.0149 (ruler gaps, 2026-11-01) while shoulder_lift's zero was 5.65 deg off:
+# the 12.5 mm made up for that error at short reach. With the zero corrected (so101_calibration.yaml,
+# 2026-11-14) 8 ruler gaps under the hand, torque on, fit to 2.4 mm rms. The joint origins below and the
+# camera pose were fitted with the old zero: fit them again before using the camera.
+table_z: -0.0024
 joints:
   shoulder_lift:
     xyz: [-0.0303992, -0.0182778, -0.0542]
