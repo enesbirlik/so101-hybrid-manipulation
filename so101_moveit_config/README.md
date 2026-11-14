@@ -33,7 +33,7 @@ In RViz, drag the interactive marker or pick a named state (`zero`, `rest`) unde
 
 Notes:
 
-- **Table:** the table is part of the robot description: a link `table`, fixed to `base_link`, with its top at the measured `table_z`. Plans that take the hand into the table are rejected (`GOAL_STATE_INVALID`).
+- **Table:** the table is part of the robot description: a link `table`, fixed to `base_link`, with its top at `table_z` (the bottom of the base meshes, from ruler gaps, 2026-11-14). Plans that take the hand into the table are rejected (`GOAL_STATE_INVALID`).
 - **Joint limits:** the URDF limits, cut to the calibrated ranges with a 3° margin.
   - `elbow_flex` goes up to 92.8°, because the folded rest pose reads up to 92.3° on its stop, and MoveIt rejects a start state outside the limits.
   - The URDF's own elbow limit (96.8°) lies past the real stop (91.8°).

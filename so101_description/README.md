@@ -78,6 +78,6 @@ Checked in phase 3 (devlog days 1–4):
 - [x] **Direction, zero, ticks ↔ radians:** per-joint direction, zero tick and 4096 ticks = 2π in `so101_bringup/config/so101_calibration.yaml` (`tools/so101_calibrate.py`).
 - [x] **Limits:** the calibrated ranges are measured on the stops. MoveIt cuts its limits to them (`so101_moveit_config/config/joint_limits.yaml`); the URDF keeps the upstream values.
 - [x] **Gripper:** a joint in radians like the others, from the same calibration. LeRobot's 0–100 range is not used.
-- [x] **Joint origins:** `shoulder_lift`, `elbow_flex`, `wrist_flex` fitted to hand-eye data (`config/so101_kinematics.yaml`). The table height `table_z` comes from ruler measurements.
+- [x] **Joint origins:** `shoulder_lift`, `elbow_flex`, `wrist_flex` fitted to hand-eye data (`config/so101_kinematics.yaml`). The table height `table_z` is the bottom of the base meshes (−2.4 mm), fitted from ruler gaps on 2026-11-14 together with a `shoulder_lift` zero correction. The origins were fitted with the old zero and are due for a refit.
 - [x] **Camera:** the solved hand-eye transform `gripper_link` → `wrist_camera_optical_frame` is published by `so101_perception`. The mount and `wrist_camera_link` in the URDF stay CAD-only, for display and collision.
 - [ ] **Effort/velocity:** still the upstream placeholders. Planning speed comes from MoveIt's `joint_limits.yaml` (3 rad/s, 8 rad/s²).

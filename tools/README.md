@@ -91,7 +91,7 @@ The board counts as visible only beside the jaws, which cover the bottom middle 
 
 `--refine-joints` fits the camera pose and the zero offsets of `shoulder_lift`, `elbow_flex` and `wrist_flex` together, on the corner reprojection error. The board is pinned to the table plane the arm stands on (z = 0, horizontal, only x, y and yaw free). With a free board pose, a shoulder error is absorbed by tilting the board. The fit is also checked on held-out poses and per run (centre pose). It only reports and does not change the joint calibration. Apply an offset only when every run agrees on it. `solve` also prints where the board sits relative to `base_link`; on the table it should be at ~0 mm and ~0°.
 
-Result on 2026-10-28 (114 samples from 3 runs): the `shoulder_lift` zero was off by +10.5° and is now corrected in the calibration file (2048 → 1929). After that, the board spread is 4.7 mm / 0.71° and the camera sits at (−1.2, 69.5, −5.1) mm in `gripper_link`. Recalibrating `shoulder_lift` with `so101_calibrate.py` would undo this correction. See [devlog day 3](../docs/devlog/2026-10-28-day-3.md).
+Result on 2026-10-28 (114 samples from 3 runs): the `shoulder_lift` zero was off by +10.5° and is now corrected in the calibration file (2048 → 1929). After that, the board spread is 4.7 mm / 0.71° and the camera sits at (−1.2, 69.5, −5.1) mm in `gripper_link`. Recalibrating `shoulder_lift` with `so101_calibrate.py` would undo this correction. See [devlog day 3](../docs/devlog/2026-10-28-day-3.md). **Superseded on 2026-11-14:** ruler gaps in free space showed this correction was about 5–6° too much, and the zero is now 1993 (−5.65° from 1929), see [devlog day 6](../docs/devlog/2026-11-14-day-6.md). The camera pose above was fitted with the old zero and has to be fitted again.
 
 ### Kinematic calibration
 
@@ -126,7 +126,7 @@ Tightening the `wrist_flex` screws took the camera fit from 6.4 px to 2.7 px ove
 
 The camera cannot see the table height, because the board pose is free. Pinning the board to the table instead raised the error to 7.1 px.
 
-The table height therefore comes from the ruler gaps instead: `table_z` in the kinematics file, 12.5 ± 1.2 mm below the bottom of the base meshes. With it, the model matches the ruler gaps within 1.1 mm RMS. `so101_table_touch.py` uses `table_z`.
+The table height therefore comes from ruler gaps instead (`table_z` in the kinematics file). On 2026-11-01 this gave 12.5 ± 1.2 mm below the bottom of the base meshes, but that value made up for a `shoulder_lift` zero that was 5.65° off. Since 2026-11-14 `table_z` is −2.4 mm, the bottom of the base meshes, where the base stands; the model matches twelve ruler gaps within 2.6 mm RMS (worst 4.7 mm). `so101_table_touch.py` uses `table_z`.
 
 A new `kinematics --write` drops `table_z`, because it belongs to the old origins. Measure it again after every fit.
 
