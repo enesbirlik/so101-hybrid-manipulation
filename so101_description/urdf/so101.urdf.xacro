@@ -25,6 +25,8 @@
   <!-- The table the base stands on, as a collision object for planning. Its top is at the
        measured table_z; without one, at the bottom of the base meshes. -->
   <xacro:if value="$(arg table)">
+    <!-- table_z is dropped on every new kinematics fit; say so instead of silently moving the table. -->
+    <xacro:unless value="${'table_z' in kinematics_file}">${xacro.warning('table_z is missing from so101_kinematics.yaml: the table is placed at the bottom of the base meshes (-2.4 mm). Measure table_z again with a ruler.')}</xacro:unless>
     <xacro:property name="table_top" value="${kinematics_file.get('table_z', -0.0024)}"/>
     <link name="table">
       <visual>
