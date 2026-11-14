@@ -67,3 +67,14 @@ The robot description is `so101_description/urdf/so101.urdf.xacro` with `ros2_co
 With `use_mock_hardware:=false` they are `so101_hardware/SO101Hardware` on the servo bus.
 
 Planned: a single "full system" launch for the experiments (control, camera, perception, Behavior Tree). For now `so101_moveit_config`'s `demo.launch.py camera:=true` starts control, camera and MoveIt together.
+
+## Consistency test
+
+`test/test_calibration_consistency.py` checks that the calibration, URDF, MoveIt limits, SRDF poses, controller list and `so101_kinematics.yaml` agree. The main point: `so101_hardware` clamps commands to the calibrated servo range, so a limit wider than that range would be clipped without a warning. It reads the source files only (no ROS, no hardware).
+
+```bash
+colcon test --packages-select so101_bringup && colcon test-result --verbose   # from ~/so101_ws
+python3 -m pytest so101_bringup/test -v                                       # from the repo root
+```
+
+`elbow_flex` upper is a known, strict xfail (the folded-rest exception in `joint_limits.yaml`). If it ever passes, the test fails so the marker gets removed.
