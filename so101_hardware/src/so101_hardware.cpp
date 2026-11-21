@@ -43,10 +43,6 @@ CallbackReturn SO101Hardware::on_init(const hardware_interface::HardwareComponen
   torque_limit_ = std::stoi(param(info, "torque_limit", "1000"));
   acceleration_ = std::stoi(param(info, "acceleration", "0"));
   goal_speed_ = std::stoi(param(info, "goal_speed", "0"));
-  // LeRobot's SO-100/101 gains: the factory P of 32 makes the arm shake.
-  p_coefficient_ = std::stoi(param(info, "p_coefficient", "16"));
-  d_coefficient_ = std::stoi(param(info, "d_coefficient", "32"));
-  i_coefficient_ = std::stoi(param(info, "i_coefficient", "0"));
   max_failures_ = std::stoi(param(info, "max_bus_failures", "5"));
   const std::string calibration_file = param(
     info, "calibration_file",
@@ -75,6 +71,13 @@ CallbackReturn SO101Hardware::on_init(const hardware_interface::HardwareComponen
     j.direction = c["direction"].as<int>();
     joints_.push_back(j);
     ids_.push_back(j.id);
+    // joint <param>, else hardware <param>, else the built-in gains
+    try {
+      gains_.push_back(resolve_gains(info, joint));
+    } catch (const std::invalid_argument & e) {
+      RCLCPP_FATAL(LOGGER, "%s", e.what());
+      return CallbackReturn::ERROR;
+    }
   }
   // Telemetry interfaces are optional: all four on every joint, or none.
   telemetry_ = std::all_of(info.joints.begin(), info.joints.end(), [](const auto & joint) {
@@ -139,9 +142,9 @@ CallbackReturn SO101Hardware::on_activate(const rclcpp_lifecycle::State &)
       set_state(j.name + "/velocity", 0.0);
       set_command(j.name + "/position", q);
       // RAM only (the EEPROM lock stays on), so the factory gains return after a power cycle.
-      bus_->write_u8(j.id, P_COEFFICIENT, static_cast<uint8_t>(p_coefficient_));
-      bus_->write_u8(j.id, D_COEFFICIENT, static_cast<uint8_t>(d_coefficient_));
-      bus_->write_u8(j.id, I_COEFFICIENT, static_cast<uint8_t>(i_coefficient_));
+      bus_->write_u8(j.id, P_COEFFICIENT, static_cast<uint8_t>(gains_[i].p));
+      bus_->write_u8(j.id, D_COEFFICIENT, static_cast<uint8_t>(gains_[i].d));
+      bus_->write_u8(j.id, I_COEFFICIENT, static_cast<uint8_t>(gains_[i].i));
       bus_->write_u8(j.id, ACCELERATION, static_cast<uint8_t>(acceleration_));
       bus_->write_u16(j.id, GOAL_SPEED, static_cast<uint16_t>(goal_speed_));
       bus_->write_u16(j.id, GOAL_POSITION, static_cast<uint16_t>(servos[i].ticks));
@@ -163,8 +166,12 @@ CallbackReturn SO101Hardware::on_activate(const rclcpp_lifecycle::State &)
     set_state("torque/enable", 1.0);
   }
   failures_ = 0;
-  RCLCPP_INFO(LOGGER, "torque on, holding the present pose (P %d, D %d, I %d)",
-              p_coefficient_, d_coefficient_, i_coefficient_);
+  std::string gains;
+  for (size_t i = 0; i < joints_.size(); ++i) {
+    gains += (i ? ", " : "") + joints_[i].name + " " + std::to_string(gains_[i].p) + "/" +
+             std::to_string(gains_[i].d) + "/" + std::to_string(gains_[i].i);
+  }
+  RCLCPP_INFO(LOGGER, "torque on, holding the present pose (P/D/I: %s)", gains.c_str());
   return CallbackReturn::SUCCESS;
 }
 

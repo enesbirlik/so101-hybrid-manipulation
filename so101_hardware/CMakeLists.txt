@@ -41,6 +41,12 @@ install(TARGETS so101_hardware
   RUNTIME DESTINATION bin
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_servo_gains test/test_servo_gains.cpp)
+  target_link_libraries(test_servo_gains so101_hardware)
+endif()
+
 ament_export_targets(export_${PROJECT_NAME} HAS_LIBRARY_TARGET)
 ament_export_dependencies(hardware_interface pluginlib rclcpp rclcpp_lifecycle)
 ament_package()

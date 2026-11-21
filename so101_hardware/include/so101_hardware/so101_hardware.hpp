@@ -13,6 +13,7 @@
 
 #include "hardware_interface/system_interface.hpp"
 #include "so101_hardware/feetech_bus.hpp"
+#include "so101_hardware/servo_gains.hpp"
 
 namespace so101_hardware
 {
@@ -63,9 +64,7 @@ private:
   int torque_limit_ = 1000;   // 0.1 %
   int acceleration_ = 0;      // 100 step/s^2, 0 = servo default (no limit)
   int goal_speed_ = 0;        // step/s, 0 = no limit
-  int p_coefficient_ = 16;    // position loop gains, written to RAM on activation
-  int d_coefficient_ = 32;
-  int i_coefficient_ = 0;
+  std::vector<ServoGains> gains_;   // per joint, written to RAM on activation
   int max_failures_ = 5;      // consecutive bus failures before read() reports an error
   int failures_ = 0;
   bool telemetry_ = false;    // the URDF declares load/current/temperature/voltage state interfaces
