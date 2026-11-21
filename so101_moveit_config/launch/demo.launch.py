@@ -34,6 +34,8 @@ def generate_launch_description():
                               description="mock_components/GenericSystem instead of the servo bus"),
         DeclareLaunchArgument("camera", default_value="false",
                               description="Start the wrist camera (image in RViz, hand-eye transform in TF)"),
+        DeclareLaunchArgument("cubes", default_value="false",
+                              description="With camera:=true, also run the ArUco cube detector"),
         DeclareLaunchArgument("camera_fps", default_value="15.0", description="Wrist camera publish rate"),
         DeclareLaunchArgument("rviz", default_value="true", description="Start RViz with the MotionPlanning display"),
         DeclareLaunchArgument("dashboard", default_value="false",
@@ -44,7 +46,7 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(
             PathJoinSubstitution([FindPackageShare("so101_perception"), "launch", "wrist_camera.launch.py"]),
-            launch_arguments={"fps": LaunchConfiguration("camera_fps")}.items(),
+            launch_arguments={"fps": LaunchConfiguration("camera_fps"), "cubes": LaunchConfiguration("cubes")}.items(),
             condition=IfCondition(LaunchConfiguration("camera")),
         ),
         Node(

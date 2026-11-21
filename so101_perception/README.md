@@ -34,7 +34,33 @@ ros2 launch so101_moveit_config demo.launch.py camera:=true   # the same, inside
 | `config/wrist_camera_fisheye.yaml` | Intrinsics, equidistant (fisheye) model, 1280×720 ([tools](../tools/README.md#so101_camera_calibpy)) |
 | `config/wrist_camera_hand_eye.yaml` | `gripper_link` → `wrist_camera_optical_frame`, from the kinematic calibration |
 
+## ArUco cubes
+
+```bash
+ros2 launch so101_perception wrist_camera.launch.py cubes:=true
+ros2 launch so101_moveit_config demo.launch.py camera:=true cubes:=true
+```
+
+The cubes: 30 mm edge, one `DICT_4X4_50` marker per face (black square 22 mm), cube *k* (0–5) carries ids 6*k* … 6*k*+5. `scripts/cube_detector_node.py` finds them in the wrist image and gives their pose in `base_link`:
+
+| Topic | Content |
+|---|---|
+| `/cubes/detections` | `vision_msgs/Detection3DArray`: the cubes seen in this frame (`id` = `cube_<k>`, score = faces seen / 3) |
+| `/cubes/markers` | Boxes and labels for RViz and the dashboard: solid while seen, faint for up to `memory_s` (30 s) after |
+| `/wrist_camera/cubes/compressed` | The image with the markers, cube outlines and positions drawn in; only while someone watches |
+| TF `base_link` → `cube_<k>` | Every cube seen in the last `memory_s` |
+
+- **How:**
+  1. The marker corners are undistorted with the fisheye model, and each marker's pose comes from `solvePnP` (IPPE_SQUARE).
+  2. The cube centre lies 15 mm behind each face.
+  3. The cube's rotation about the vertical comes from the face's own axes, modulo 90°. The face layout on the cube does not matter, and one face is enough.
+  4. Faces seen at a grazing angle (< 0.35 cosine) are dropped; the rest are weighted by that angle.
+- **Table prior (`snap_to_table`, on by default):** the depth of a small marker is its weakest part (a few mm at 25 cm), while the ray direction is good. A cube resting on the table has its centre at `table_z` + 15 mm (`table_z` from `so101_description/config/so101_kinematics.yaml`). So every face's estimate is slid along its camera ray to that height, if it is within 20 mm of it. A stacked or held cube is left alone.
+- The geometry is in `scripts/cube_detection.py` (no ROS). `test/test_cube_detection.py` ray-traces a cube through the fisheye model and checks it: ≤ 1.2 mm and < 1° with the table prior, ≤ 5 mm without.
+- The absolute accuracy also depends on the hand-eye transform and the joint origins, which were fitted before the shoulder zero changed (2026-11-14): refit them before trusting millimetres.
+- For small or far cubes, run the camera at `scale:=1.0`: at 640×360 a marker 30 cm away is only ~27 px wide.
+
 ## Planned
 
-- **Phase 5:** ArUco marker detection for workspace and target poses; object detection giving target poses in the robot frame; outputs consumed by the Behavior Tree.
+- **Phase 5:** object detection beyond markers; outputs consumed by the Behavior Tree.
 - Confidence / uncertainty outputs, which are needed for the confidence-based handover trigger studied in phase 7.
