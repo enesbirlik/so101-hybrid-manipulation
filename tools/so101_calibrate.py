@@ -354,7 +354,9 @@ def write_joint(bus, j, plan, cal):
            bus.read_u16(j.id, fb.MAX_POSITION_LIMIT))
     expected = (bus.read_position(j.id) + shift) % fb.TICKS_PER_TURN
     if hi - lo > 2 * margin:
-        write_eeprom(bus, j.id, offset, lo + margin, hi - margin)
+        # the gripper keeps its closed end: with the margin the servo stopped ~1.5 deg before the
+        # jaws met (jaw tips ~2 mm apart, nothing thin could be held)
+        write_eeprom(bus, j.id, offset, lo if j.name == "gripper" else lo + margin, hi - margin)
     else:
         write_eeprom(bus, j.id, offset, 0, fb.TICKS_PER_TURN - 1)
     if abs(wrap(bus.read_position(j.id) - expected)) > 30:
