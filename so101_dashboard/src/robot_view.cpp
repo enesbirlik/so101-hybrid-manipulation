@@ -1,5 +1,6 @@
 #include "robot_view.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -406,6 +407,7 @@ void RobotView::render(const LinkPoses & poses, const LinkPoses & ghost)
       DrawSphere(path_.back(), 0.006f, trail);
     }
   }
+  draw_cubes();
   const Color fov = theme::to_raylib(ImVec4(theme::ROSE.x, theme::ROSE.y, theme::ROSE.z, 0.8f));
   for (size_t i = 0; i + 1 < fov_world_.size(); i += 2) {
     DrawLine3D(fov_world_[i], fov_world_[i + 1], fov);
@@ -494,6 +496,40 @@ LinkPoses RobotView::ghost_poses(const Ghost & ghost, const JointValues & q, boo
   return at(ghost.positions.back());
 }
 
+void RobotView::draw_cubes() const
+{
+  for (const auto & c : cubes_) {
+    const auto u8 = [](float v) {return static_cast<unsigned char>(std::clamp(v, 0.0f, 1.0f) * 255.0f);};
+    const bool fresh = c.rgba[3] >= 0.5f;
+    const Color fill{u8(c.rgba[0]), u8(c.rgba[1]), u8(c.rgba[2]), static_cast<unsigned char>(fresh ? 200 : 60)};
+    const Color edge{u8(c.rgba[0]), u8(c.rgba[1]), u8(c.rgba[2]), 255};
+    rlPushMatrix();
+    rlTranslatef(c.position[0], c.position[1], c.position[2]);
+    rlRotatef(c.yaw * RAD2DEG, 0.0f, 0.0f, 1.0f);
+    DrawCube(Vector3Zero(), c.edge, c.edge, c.edge, fill);
+    DrawCubeWires(Vector3Zero(), c.edge, c.edge, c.edge, edge);
+    rlPopMatrix();
+  }
+}
+
+void RobotView::draw_cube_labels(ImVec2 origin, float scale) const
+{
+  ImDrawList * dl = ImGui::GetWindowDrawList();
+  for (const auto & c : cubes_) {
+    const Vector3 p{c.position[0], c.position[1], c.position[2] + c.edge};
+    if (Vector3DotProduct(Vector3Subtract(p, camera_.position),
+      Vector3Subtract(camera_.target, camera_.position)) <= 0)
+    {
+      continue;
+    }
+    const Vector2 s = GetWorldToScreenEx(p, camera_, target_w_, target_h_);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s  %.1f, %.1f cm", c.label.c_str(), c.position[0] * 100.0f, c.position[1] * 100.0f);
+    const ImVec4 col(c.rgba[0], c.rgba[1], c.rgba[2], c.rgba[3] >= 0.5f ? 1.0f : 0.5f);
+    dl->AddText(ImVec2(origin.x + s.x * scale + 6, origin.y + s.y * scale - 16), ImGui::GetColorU32(col), buf);
+  }
+}
+
 void RobotView::update_fov(State & state)
 {
   LineMarker fov;
@@ -543,6 +579,13 @@ void RobotView::draw(State & state, bool * open)
     }
     ghost = state.ghost;
     task_running = state.task.running;
+    cubes_.clear();
+    for (const auto & [id, cube] : state.cubes) {
+      // the detector publishes in base_link, which is the model root here
+      if (model_ && cube.frame == model_->getRoot()->name) {
+        cubes_.push_back(cube);
+      }
+    }
   }
   if (!model_) {
     ImGui::SetCursorPos(ImVec2(12, 36));
@@ -579,6 +622,7 @@ void RobotView::draw(State & state, bool * open)
     Rectangle{0, 0, static_cast<float>(target_w_), -static_cast<float>(target_h_)});
   if (labels_) {
     draw_labels(poses, q, pos, 1.0f / SUPERSAMPLE);
+    draw_cube_labels(pos, 1.0f / SUPERSAMPLE);
   }
 
   // overlay: toggles left, FK check right

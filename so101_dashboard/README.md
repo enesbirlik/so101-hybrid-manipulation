@@ -13,8 +13,8 @@ Every panel can be hidden and shown again: the **View** menu, the panel names in
 
 | Key | Panel | Shows | From |
 |---|---|---|---|
-| F1 | **3D VIEW** | The URDF posed from the joint states, the table grid, joint labels, the camera field of view. While a task runs: the plan's goal pose as a ghost and the tool path | `/robot_description`, `/joint_states`, TF, `/wrist_camera/fov`, `/display_planned_path` |
-| F2 | **CAMERA** | Any `sensor_msgs/CompressedImage` topic, chosen from a list. Hidden, it unsubscribes and decodes nothing | the wrist camera now; processed images later |
+| F1 | **3D VIEW** | The URDF posed from the joint states, the table grid, joint labels, the camera field of view, the detected ArUco cubes (faint once out of view). While a task runs: the plan's goal pose as a ghost and the tool path | `/robot_description`, `/joint_states`, TF, `/wrist_camera/fov`, `/cubes/markers`, `/display_planned_path` |
+| F2 | **CAMERA** | Any `sensor_msgs/CompressedImage` topic, chosen from a list. Hidden, it unsubscribes and decodes nothing | the wrist camera; `/wrist_camera/cubes/compressed` for the cube detector's view |
 | F3 | **TASKS** | Task buttons, status, STOP; planner and speed under *motion settings* | `move_group` (`MoveGroup` action), the trajectory controllers |
 | F4 | **TASK LOG** | Results of past tasks, newest first | |
 | F5 | **JOINTS** | Per joint: position, velocity, load, current, temperature, voltage. Right-click a column header to hide or show columns (a *TREND* sparkline column is hidden by default) | `/joint_states`, `/dynamic_joint_states` |

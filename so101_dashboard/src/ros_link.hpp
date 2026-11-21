@@ -16,6 +16,7 @@
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <visualization_msgs/msg/marker.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -85,6 +86,17 @@ struct LineMarker
   double received = -1.0;
 };
 
+// A detected cube (so101_perception's cube detector, /cubes/markers): a box in `frame`.
+struct CubeMarker
+{
+  std::string frame;
+  std::array<float, 3> position{};
+  float yaw = 0.0f;                 // rad about z; the detector only reports yaw
+  float edge = 0.03f;               // m
+  std::array<float, 4> rgba{};      // alpha < 0.5: remembered, out of view
+  std::string label;
+};
+
 // The plan move_group published last (/display_planned_path), for the ghost robot.
 struct Ghost
 {
@@ -127,6 +139,7 @@ struct State
   CameraFrame frame;
   RateMeter image_rate;
   LineMarker fov;
+  std::map<int, CubeMarker> cubes;     // by cube index
 
   TaskStatus task;
   std::deque<TaskLogEntry> task_log;   // newest first
@@ -153,6 +166,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::CompressedImage>::SharedPtr image_sub_;
   std::string subscribed_image_topic_;
   rclcpp::Subscription<visualization_msgs::msg::Marker>::SharedPtr fov_sub_;
+  rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr cubes_sub_;
   rclcpp::TimerBase::SharedPtr topics_timer_;
   rclcpp::CallbackGroup::SharedPtr image_group_;   // decoding must not hold up the joint states
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;

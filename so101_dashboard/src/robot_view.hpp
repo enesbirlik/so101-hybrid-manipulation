@@ -52,7 +52,9 @@ private:
   void draw_table(const LinkPoses & poses);
   void draw_labels(const LinkPoses & poses, const JointValues & q, ImVec2 origin, float scale) const;
   void check_fk(State & state, const LinkPoses & poses);
-  void update_fov(State & state);   // camera field of view, from its marker and TF
+  void update_fov(State & state);
+  void draw_cubes() const;
+  void draw_cube_labels(ImVec2 origin, float scale) const;   // camera field of view, from its marker and TF
 
   std::shared_ptr<urdf::Model> model_;
   uint64_t description_version_ = 0;
@@ -75,7 +77,8 @@ private:
 
   double fk_error_mm_ = -1.0;   // FK vs TF at the gripper frame, -1 = not checked yet
   double fk_checked_at_ = -10.0;
-  std::vector<Vector3> fov_world_;   // line segment end points
+  std::vector<Vector3> fov_world_;
+  std::vector<CubeMarker> cubes_;     // in the model root frame, copied from the state each frame   // line segment end points
   std::vector<Vector3> path_;        // tool (gripper_frame_link) positions along the last plan
 };
 

@@ -83,6 +83,33 @@ RosLink::RosLink(State & state)
       }
       state_.fov.received = now_s();
     });
+  cubes_sub_ = create_subscription<visualization_msgs::msg::MarkerArray>(
+    "/cubes/markers", 10, [this](const visualization_msgs::msg::MarkerArray & msg) {
+      std::lock_guard<std::mutex> lock(state_.mutex);
+      for (const auto & m : msg.markers) {
+        if (m.action == visualization_msgs::msg::Marker::DELETE) {
+          if (m.ns == "cubes") {
+            state_.cubes.erase(m.id);
+          }
+          continue;
+        }
+        if (m.ns == "cube_labels") {
+          state_.cubes[m.id].label = m.text;
+          continue;
+        }
+        if (m.ns != "cubes") {
+          continue;
+        }
+        auto & cube = state_.cubes[m.id];
+        cube.frame = m.header.frame_id;
+        cube.position = {static_cast<float>(m.pose.position.x), static_cast<float>(m.pose.position.y),
+          static_cast<float>(m.pose.position.z)};
+        const auto & q = m.pose.orientation;
+        cube.yaw = static_cast<float>(std::atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z)));
+        cube.edge = static_cast<float>(m.scale.x);
+        cube.rgba = {m.color.r, m.color.g, m.color.b, m.color.a};
+      }
+    });
   image_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   topics_timer_ = create_wall_timer(std::chrono::milliseconds(500), [this] {refresh_image_topics();});
 }
