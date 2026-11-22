@@ -43,8 +43,9 @@ cube_pick_place:
     refine_required: false  # abort when the close-up sees no stable cube (else keep the far estimate)
     # contact on the way down (arm)
     contact_joint: "shoulder_lift"  # joint whose lag (reference - feedback) shows a contact
-    descend_contact_lag_deg: 1.5  # lag above the hover baseline after a step = contact
-    motion_contact_lag_deg: 4.0  # lag above the hover baseline during a step = contact
+    descend_contact_lag_deg: 3.0  # lag above the hover baseline after a step = contact (safety net)
+    descend_step_lag_deg: 1.0  # lag rise over the previous descent step = contact
+    motion_contact_lag_deg: 4.0  # lag above the previous step's during a step = contact
     descend_lag_samples: 15  # controller states averaged after each step
     # soft grasp (gripper)
     close_speed_deg_s: 12.0  # closing ramp speed

@@ -87,8 +87,9 @@ PARAMS = {
     "refine_required": (False, "abort when the close-up sees no stable cube (else keep the far estimate)"),
     # contact on the way down (arm)
     "contact_joint": ("shoulder_lift", "joint whose lag (reference - feedback) shows a contact"),
-    "descend_contact_lag_deg": (1.5, "lag above the hover baseline after a step = contact"),
-    "motion_contact_lag_deg": (4.0, "lag above the hover baseline during a step = contact"),
+    "descend_contact_lag_deg": (3.0, "lag above the hover baseline after a step = contact (safety net)"),
+    "descend_step_lag_deg": (1.0, "lag rise over the previous descent step = contact"),
+    "motion_contact_lag_deg": (4.0, "lag above the previous step's during a step = contact"),
     "descend_lag_samples": (15, "controller states averaged after each step"),
     # soft grasp (gripper)
     "close_speed_deg_s": (12.0, "closing ramp speed"),
@@ -432,16 +433,23 @@ class PickPlaceNode(Node):
         self.feedback("descend", "hover trim " + ", ".join(f"{n.split('_')[1]} {math.degrees(b):+.1f}"
                                                          for n, b in zip(ARM, self.arm_bias) if abs(b) > 1e-4))
         base = self.motion.mean_lag(j, int(p.descend_lag_samples))
+        # Gravity on the arm changes as it goes down, so the lag drifts slowly (~0.5 deg per cm,
+        # 1.9 deg over 5 cm on 2026-11-22 with nothing touched). A jaw landing on something makes it
+        # jump within one step: compare each step with the previous one; the hover baseline stays as a
+        # wide safety net.
+        step_base = base
 
         def monitor(samples):
-            return any(math.degrees(s.ref[j] - s.fb[j]) - base > p.motion_contact_lag_deg for s in samples)
+            return any(math.degrees(s.ref[j] - s.fb[j]) - step_base > p.motion_contact_lag_deg for s in samples)
         prev = plan.hover.q
         for i, (h, r) in enumerate(zip(plan.heights, plan.descent)):
-            self.feedback("descend", f"tip {h * 100:.1f} cm")
             res = self.motion.run("arm", [r.q], p.descend_speed, monitor=monitor, bias=self.arm_bias)
-            lag = self.motion.mean_lag(j, int(p.descend_lag_samples)) - base
-            if res.stopped or lag > p.descend_contact_lag_deg:
-                msg = f"contact at {h * 100:.1f} cm ({j} lag {lag:+.1f} deg over the hover)"
+            now = self.motion.mean_lag(j, int(p.descend_lag_samples))
+            step, lag = now - step_base, now - base
+            self.feedback("descend", f"tip {h * 100:.1f} cm, {j} lag {step:+.2f} over the last step, {lag:+.2f} over the hover")
+            if res.stopped or step > p.descend_step_lag_deg or lag > p.descend_contact_lag_deg:
+                msg = (f"contact at {h * 100:.1f} cm ({j} lag {step:+.1f} deg over the last step, "
+                       f"{lag:+.1f} over the hover)")
                 if stop_on_contact_ok:
                     self.feedback("descend", msg + ": stopping here")
                     return i
@@ -451,6 +459,7 @@ class PickPlaceNode(Node):
             if not res.ok:
                 raise Fail("descend", f"arm move failed: {res.error}")
             prev = r.q
+            step_base = now
         return len(plan.descent) - 1
 
     def soft_close(self):
