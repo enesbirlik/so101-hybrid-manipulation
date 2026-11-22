@@ -112,8 +112,10 @@ PARAMS = {
     "refine_required": (False, "abort when the close-up sees no stable cube (else keep the far estimate)"),
     # contact on the way down (arm)
     "contact_joint": ("shoulder_lift", "joint whose lag (reference - feedback) shows a contact"),
-    "descend_contact_lag_deg": (2.5, "lag over the baseline measured at the contact zone = contact"),
+    "descend_contact_lag_deg": (1.5, "contact zone: lag rise over the moving baseline = contact"),
     "free_descent_lag_deg": (4.5, "descent above the contact zone: lag over the hover baseline that stops it (safety net)"),
+    "contact_warmup_s": (0.4, "contact zone: the first part of the move learns the moving lag baseline"),
+    "contact_zone_speed_factor": (0.5, "contact zone: descent speed x this (less tracking lag, more time to react)"),
     "contact_zone_m": (0.035, "the last part of the descent (tip within this of its goal) runs with the tight contact threshold"),
     "descend_lag_samples": (15, "controller states averaged after each step"),
     # soft grasp (gripper)
@@ -640,31 +642,48 @@ class PickPlaceNode(Node):
         # until the tip is near its goal, so the descent is two moves: down to `contact_zone_m` above the
         # goal with only a wide safety threshold, then the lag baseline is measured again and the last
         # part runs with the tight one.
+        # In the contact zone the baseline is measured WHILE moving: at full stretch the tracking lag of a
+        # moving shoulder alone is ~2.8 deg, so a baseline taken standing still stopped the arm at once.
+        # The first `contact_warmup_s` of that move learn it; contact = a rise over it. The wide
+        # threshold over the hover baseline stays active throughout.
         peak = [0.0]
-        state = {"base": sgn * self.motion.mean_lag(j, int(p.descend_lag_samples)), "thr": p.free_descent_lag_deg}
+        hover_base = sgn * self.motion.mean_lag(j, int(p.descend_lag_samples))
+        state = {"zone": False, "t0": 0.0, "dyn": [], "base": None}
 
         def monitor(samples):
             for s_ in samples:
-                ex = sgn * math.degrees(s_.ref[j] - s_.fb[j]) - state["base"]
+                lag = sgn * math.degrees(s_.ref[j] - s_.fb[j])
+                if lag - hover_base > p.free_descent_lag_deg:
+                    peak[0] = max(peak[0], lag - hover_base)
+                    return True
+                if not state["zone"]:
+                    continue
+                if s_.t - state["t0"] < p.contact_warmup_s:
+                    state["dyn"].append(lag)
+                    continue
+                if state["base"] is None:
+                    state["base"] = float(np.median(state["dyn"][len(state["dyn"]) // 2:])) if state["dyn"] else lag
+                ex = lag - state["base"]
                 peak[0] = max(peak[0], ex)
-                if ex > state["thr"]:
+                if ex > p.descend_contact_lag_deg:
                     return True
             return False
         pts = [r.q for r in plan.descent]
         hs = list(plan.heights)
         k = next((n for n, h in enumerate(hs) if h <= hs[-1] + p.contact_zone_m + 1e-6), 0)
-        phases = ([(pts[:k], p.free_descent_lag_deg)] if k > 0 else []) + [(pts[k:], p.descend_contact_lag_deg)]
+        phases = ([(pts[:k], False)] if k > 0 else []) + [(pts[k:], True)]
         self.feedback("descend", f"down to {hs[-1] * 100:.1f} cm; contact watch tight below {hs[k] * 100:.1f} cm")
         prev_q = np.asarray(plan.hover.q)
         res = None
-        for seg, thr in phases:
+        for seg, zone in phases:
             if not seg:
                 continue
-            if thr != state["thr"]:
-                state["base"] = sgn * self.motion.mean_lag(j, int(p.descend_lag_samples))
-                state["thr"] = thr
+            speed = p.descend_speed * (p.contact_zone_speed_factor if zone else 1.0)
             span = float(np.max(np.abs(np.asarray(seg[-1]) - prev_q)))
-            total = max(self.motion.min_move_s, span / max(1e-3, p.descend_speed))
+            total = max(self.motion.min_move_s, span / max(1e-3, speed))
+            if zone:
+                total = max(total, p.contact_warmup_s * 3)
+                state.update(zone=True, t0=time.monotonic(), dyn=[], base=None)
             times = [total * (n + 1) / len(seg) for n in range(len(seg))]
             res = self.motion.run("arm", seg, times=times, monitor=monitor, bias=self.arm_bias, through=True)
             prev_q = np.asarray(seg[-1])
@@ -673,7 +692,7 @@ class PickPlaceNode(Node):
         h_now = float(self.model.tip(np.asarray(self.motion.q_arm()))[2] - self.model.table_z)
         i = int(np.argmin([abs(h - h_now) for h in plan.heights]))
         if res.stopped:
-            msg = f"contact at {h_now * 100:.1f} cm ({j} lag {peak[0]:+.1f} deg, threshold {state['thr']:.1f})"
+            msg = f"contact at {h_now * 100:.1f} cm ({j} lag rise {peak[0]:+.1f} deg)"
             if stop_on_contact_ok:
                 self.feedback("descend", msg + ": stopping here")
                 return i
@@ -685,7 +704,7 @@ class PickPlaceNode(Node):
             raise Fail("descend", f"something under the jaws: {msg}")
         if not res.ok:
             raise Fail("descend", f"arm move failed: {res.error}")
-        self.feedback("descend", f"down at {h_now * 100:.1f} cm, {j} lag peak {peak[0]:+.2f} deg over the last baseline")
+        self.feedback("descend", f"down at {h_now * 100:.1f} cm, {j} lag rise peak {peak[0]:+.2f} deg")
         return len(plan.descent) - 1
 
     def soft_close(self):

@@ -56,8 +56,10 @@ cube_pick_place:
     refine_required: false  # abort when the close-up sees no stable cube (else keep the far estimate)
     # contact on the way down (arm)
     contact_joint: "shoulder_lift"  # joint whose lag (reference - feedback) shows a contact
-    descend_contact_lag_deg: 2.5  # lag over the baseline measured at the contact zone = contact
+    descend_contact_lag_deg: 1.5  # contact zone: lag rise over the moving baseline = contact
     free_descent_lag_deg: 4.5  # descent above the contact zone: lag over the hover baseline that stops it (safety net)
+    contact_warmup_s: 0.4  # contact zone: the first part of the move learns the moving lag baseline
+    contact_zone_speed_factor: 0.5  # contact zone: descent speed x this (less tracking lag, more time to react)
     contact_zone_m: 0.035  # the last part of the descent (tip within this of its goal) runs with the tight contact threshold
     descend_lag_samples: 15  # controller states averaged after each step
     # soft grasp (gripper)
