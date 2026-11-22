@@ -1,0 +1,84 @@
+# Parameters of so101_manipulation pick_place (node cube_pick_place), with their defaults.
+# The defaults also live in so101_manipulation/pick_place_node.py (PARAMS); test/test_params.py keeps both equal.
+# Lengths in m unless _mm, angles in deg, speeds in rad/s on the joint that moves furthest unless _deg_s.
+cube_pick_place:
+  ros__parameters:
+    # perception
+    cube_source: "auto"  # cube adapter: 'tracked' (/cubes/tracked, the detector's filter), 'detections' (/cubes/detections + own median window), 'auto' (tracked when it reports the cube)
+    tracked_topic: "/cubes/tracked"  # filtered cubes (vision_msgs/Detection3DArray, score >= 0.5 = stable)
+    detections_topic: "/cubes/detections"  # per-frame cubes (vision_msgs/Detection3DArray)
+    obs_min_fresh: 3  # tracked: new image stamps after the arm stopped needed for a fresh stable estimate
+    cube_edge_mm: 30.0  # cube edge
+    obs_window_s: 1.5  # observations older than this (s) are not used for an estimate
+    obs_min_count: 5  # observations needed for a stable estimate
+    obs_max_spread_mm: 3.0  # stable: every observation within this of the median centre
+    obs_max_yaw_spread_deg: 4.0  # stable: every yaw (mod 90) within this of the median
+    obs_settle_s: 0.4  # after the arm stops, wait this long before observations count
+    # search
+    search_pans_deg: [0.0, -25.0, 25.0, -45.0, 45.0]  # pan angles of the search views
+    search_initial_wait_s: 1.0  # first look for the cube where the arm is, this long
+    search_view_wait_s: 2.0  # wait for a stable cube at each view pose
+    search_gripper_deg: 12.0  # jaws nearly shut while searching (they hide less of the image); clamped to the floor
+    # grasp geometry
+    open_deg: 30.0  # gripper opening for the approach (~53 mm gap)
+    grasp_tip_height: 0.011  # fixed jaw tip above the cube's bottom at the grasp
+    hover_height: 0.07  # fixed jaw tip above the cube's bottom at the hover
+    hover_min_height: 0.05  # lowest hover tried when the hover is out of reach
+    descend_step: 0.01  # height step of the descent
+    gap_fraction: 0.5  # where the cube centre goes between the fixed (0) and moving (1) jaw tip; 0.5 = gap midpoint
+    allow_tilt: true  # allow a tilted approach (<= max_tilt_deg) beyond vertical reach
+    max_tilt_deg: 15.0  # largest jaw tilt of the fallback
+    vertical_tol_deg: 3.0  # jaws count as vertical within this
+    ik_tolerance_mm: 2.0  # largest IK position error accepted
+    roll_limit_deg: 90.0  # |wrist_roll| never beyond this (camera cable)
+    min_final_clearance_mm: 3.0  # lowest point of the hand above the table at the grasp pose
+    # close-up refinement
+    refine_max_iter: 2  # close-up refinements at the hover
+    refine_min_shift_mm: 2.0  # re-target when the close-up estimate moved more than this
+    refine_max_shift_mm: 40.0  # abort when the close-up estimate moved more than this
+    refine_timeout_s: 3.0  # wait this long for a stable close-up estimate
+    refine_required: false  # abort when the close-up sees no stable cube (else keep the far estimate)
+    # contact on the way down (arm)
+    contact_joint: "shoulder_lift"  # joint whose lag (reference - feedback) shows a contact
+    descend_contact_lag_deg: 1.5  # lag above the hover baseline after a step = contact
+    motion_contact_lag_deg: 4.0  # lag above the hover baseline during a step = contact
+    descend_lag_samples: 15  # controller states averaged after each step
+    # soft grasp (gripper)
+    close_speed_deg_s: 12.0  # closing ramp speed
+    open_speed_deg_s: 20.0  # opening speed (release, abort)
+    contact_lag_deg: 1.0  # contact when measured - commanded (= -(controller lag), positive when blocked) is this far above its free-closing baseline
+    contact_samples: 3  # consecutive samples over the threshold
+    contact_load_pct: 0.0  # |load - baseline| that also counts as contact; 0 = off
+    squeeze_deg: 1.5  # hold target = contact angle - this, never below the floor
+    squeeze_mm: 1.5  # HARD FLOOR: no gripper command below the angle of a gap of cube_edge_mm - this (30 mm -> ~11.5 deg); the closing ramp ends there
+    contact_window_deg: 5.0  # contact must lie within expected +- this, else abort
+    gap_zero_mm: 13.0  # jaw gap at 0 deg
+    gap_per_deg_mm: 1.35  # jaw gap per degree (<= 30 deg)
+    empty_deadband_deg: 0.56  # empty jaws stop this far above the command (servo deadband; real arm: command 11.48 -> 12.04 deg)
+    held_angle_margin_deg: 0.25  # held: measured > command + empty_deadband_deg + this
+    empty_angle_tol_deg: 0.15  # empty: measured <= command + empty_deadband_deg + this (and low current)
+    held_current_ma: 12.0  # held: or the gripper current at/above this (real arm: 13-20 mA with the cube, 6 empty)
+    empty_current_ma: 10.0  # empty: current below this
+    current_window_s: 0.3  # the current is averaged over this
+    grip_settle_s: 0.4  # wait after the close before judging the grip
+    hold_ramp_s: 0.15  # time to move the command to the hold target
+    grasp_retries: 1  # retries after a contact outside the window
+    sim_contact_deg: .nan  # MOCK ONLY: pretend a cube blocks the jaws at this angle (NaN = off); refused unless robot_description uses mock_components
+    gripper_torque_limit: 200.0  # gripper torque limit during the grasp, 0.1 % units (200 = 20 %, holds a paper cube); <= 0 = do not touch it
+    gripper_torque_restore: 1000.0  # torque limit restored after the gripper opened (clamped by the hardware)
+    torque_limit_topic: "/gripper_torque_controller/commands"  # std_msgs/Float64MultiArray command topic
+    torque_limit_timeout_s: 3.0  # abort when the torque_limit readback does not match within this
+    torque_limit_required: true  # abort when the torque limit interface is missing (skipped on mock hardware)
+    # place
+    release_gap: 0.002  # release this much above the surface (contact stops earlier)
+    stack_max_age_s: 60.0  # the cube to stack on must have been seen this recently
+    # motion / safety
+    transit_speed: 0.6  # rad/s, transit
+    approach_speed: 0.3  # rad/s, re-targeting at the hover
+    descend_speed: 0.12  # rad/s, descent steps
+    lift_speed: 0.2  # rad/s, lift / retreat
+    min_move_s: 0.8  # shortest move
+    settle_s: 0.3  # pause after each move
+    transit_clearance_mm: 45.0  # lowest point (arm, camera, carried cube) above the table on transits; cubes are 30 mm tall
+    via_height: 0.12  # tip height of the via pose above a target
+    table_z: .nan  # table surface in base_link; NaN = so101_kinematics.yaml
