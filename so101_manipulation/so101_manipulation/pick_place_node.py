@@ -1114,8 +1114,29 @@ def sg_fold(a):
     return (a + math.pi / 4) % (math.pi / 2) - math.pi / 4
 
 
+def another_server_running(timeout_s=2.0) -> bool:
+    """True if a /pick_cube action server already exists on this ROS domain. Two of them would both
+    accept a goal and drive the arm against each other (happened on 2026-11-22 after a restart left
+    an old node running)."""
+    probe = rclpy.create_node("cube_pick_place_probe")
+    try:
+        end = time.monotonic() + timeout_s
+        while time.monotonic() < end:
+            if probe.count_publishers("/pick_cube/_action/status") > 0:
+                return True
+            time.sleep(0.1)
+        return False
+    finally:
+        probe.destroy_node()
+
+
 def main():
     rclpy.init()
+    if another_server_running():
+        print("cube_pick_place: another /pick_cube server is already running on this ROS domain; "
+              "stop it first (two servers would both drive the arm). Exiting.", flush=True)
+        rclpy.try_shutdown()
+        raise SystemExit(1)
     node = PickPlaceNode()
     ex = MultiThreadedExecutor(num_threads=6)
     ex.add_node(node)
