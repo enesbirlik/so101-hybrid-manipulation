@@ -55,9 +55,9 @@ def transform(R, t):
     return T
 
 
-def camera_pose(q):
+def camera_pose(q, kinematics=KINEMATICS, hand_eye=HAND_EYE):
     """Joint angles (rad) -> (R_wc, t_wc) of wrist_camera_optical_frame in base_link, and table_z."""
-    with open(KINEMATICS) as f:
+    with open(kinematics) as f:
         kin = yaml.safe_load(f)
     joints = [j for j in ET.parse(URDF).getroot().iter("joint") if j.find("child") is not None]
     by_child = {j.find("child").get("link"): j for j in joints}
@@ -78,7 +78,7 @@ def camera_pose(q):
         T = T @ origin
         if axis is not None:
             T = T @ transform(cv2.Rodrigues(axis * q[name])[0], np.zeros(3))
-    with open(HAND_EYE) as f:
+    with open(hand_eye) as f:
         he = yaml.safe_load(f)
     r, t = he["rotation"], he["translation"]
     T = T @ transform(quaternion_matrix(r["x"], r["y"], r["z"], r["w"]), [t["x"], t["y"], t["z"]])
@@ -100,12 +100,14 @@ def main():
     ap.add_argument("--joints", default="rest_joints.json", help="JSON of joint angles (rad), in the folder")
     ap.add_argument("--refinement", default="subpix", choices=list(cd.MarkerDetector.REFINEMENTS))
     ap.add_argument("--no-table", action="store_true", help="do not use the table prior")
+    ap.add_argument("--hand-eye", default=HAND_EYE, help="hand-eye YAML (default: the repo file)")
+    ap.add_argument("--kinematics", default=KINEMATICS, help="joint origins and table_z (default: the repo file)")
     ap.add_argument("--overlay", help="write the frames with the detections drawn in to this folder")
     args = ap.parse_args()
 
     with open(os.path.join(args.folder, args.joints)) as f:
         q = json.load(f)
-    R_wc, t_wc, table_z = camera_pose(q)
+    R_wc, t_wc, table_z = camera_pose(q, args.kinematics, args.hand_eye)
     geometry = cd.load_cube_geometry(CUBES) if os.path.exists(CUBES) else None
     det = cd.MarkerDetector(refinement=args.refinement)
     print(f"camera in base_link {np.round(t_wc, 4)} m, looking along {np.round(R_wc[:, 2], 2)}; table_z {table_z}")
@@ -128,9 +130,9 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 255), 1, cv2.LINE_AA)
             cv2.imwrite(os.path.join(args.overlay, os.path.basename(path)), img)
     print(f"{len(paths)} frames\n")
-    print("cube  frames  centre x, y [mm]   sd    yaw [deg]  sd   | faces (rejected)  top  rms px  conf"
+    print("cube  frames  centre x, y [mm]   sd   z-rest [mm]  yaw [deg]  sd   | faces (rejected)  top  rms px  conf"
           "  | face-implied centres: spread [mm], yaw spread [deg]")
-    spreads = []
+    spreads, dz = [], []
     for k, es in sorted(per_cube.items()):
         C = np.array([e.centre[:2] for e in es]) * 1000
         Y = np.degrees([e.yaw for e in es])
@@ -143,11 +145,17 @@ def main():
         if len(es[0].faces) > 1:
             spreads.append(sp)
         e = es[0]
+        # centre height above where a cube resting on the table would have it (0 with the table prior)
+        z = (np.mean([x.centre[2] for x in es]) - table_z - cd.geometry_of(geometry, k).edge / 2) * 1000
+        dz.append(z)
         print(f"K{k}   {len(es):4d}    {C[:, 0].mean():6.1f} {C[:, 1].mean():6.1f}   {np.linalg.norm(C.std(0)):4.2f}"
-              f"   {np.degrees(ym):+6.1f}  {ysd:4.2f}  | {faces} ({rejected or '-'})  {e.top_face:3d}  "
+              f"   {z:+6.1f}     {np.degrees(ym):+6.1f}  {ysd:4.2f}  | {faces} ({rejected or '-'})  {e.top_face:3d}  "
               f"{np.mean([x.reproj_px for x in es]):5.2f}  {np.mean([x.confidence for x in es]):4.2f}  | {sp:4.1f}, {spy:4.1f}")
         for i, c in e.face_centres.items():
             print(f"        face {i:2d}: centre {c[0] * 1000:6.1f} {c[1] * 1000:6.1f}  yaw {np.degrees(e.face_yaws[i]):+6.1f}")
+    if dz:
+        print(f"\ncentre height above resting on table_z: mean {np.mean(dz):+.1f} mm, rms {np.sqrt(np.mean(np.square(dz))):.1f} mm"
+              + (" (table prior on: 0 by construction)" if not args.no_table else ""))
     if spreads:
         print(f"\nface spread of the cubes seen with 2+ faces: mean {np.mean(spreads):.1f} mm, max {np.max(spreads):.1f} mm")
 
