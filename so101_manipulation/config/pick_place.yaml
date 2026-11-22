@@ -34,6 +34,9 @@ cube_pick_place:
     min_final_clearance_mm: 3.0  # lowest point of the hand above the table at the grasp pose
     # close-up refinement
     refine_max_iter: 2  # close-up refinements at the hover
+    trim_tol_deg: 0.3  # hover trim: stop when every measured arm joint is within this of the plan
+    trim_max_iter: 3  # hover trim: correction moves at most
+    trim_max_bias_deg: 5.0  # hover trim: largest correction added to a joint command
     refine_min_shift_mm: 2.0  # re-target when the close-up estimate moved more than this
     refine_max_shift_mm: 40.0  # abort when the close-up estimate moved more than this
     refine_timeout_s: 3.0  # wait this long for a stable close-up estimate

@@ -34,6 +34,7 @@ from so101_manipulation_interfaces.action import PickCube, PlaceCube
 
 from . import soft_grasp as sg
 from .cube_tracker import cube_key, make_cube_tracker
+from .kinematics import ARM
 from .grasp import WEIGHT_TILTED, GraspPlanner, default_views, load_hand_eye
 from .hooks import GripperTorqueLimitHook
 from .kinematics import ArmModel, perception_config_dir
@@ -77,6 +78,9 @@ PARAMS = {
     "min_final_clearance_mm": (3.0, "lowest point of the hand above the table at the grasp pose"),
     # close-up refinement
     "refine_max_iter": (2, "close-up refinements at the hover"),
+    "trim_tol_deg": (0.3, "hover trim: stop when every measured arm joint is within this of the plan"),
+    "trim_max_iter": (3, "hover trim: correction moves at most"),
+    "trim_max_bias_deg": (5.0, "hover trim: largest correction added to a joint command"),
     "refine_min_shift_mm": (2.0, "re-target when the close-up estimate moved more than this"),
     "refine_max_shift_mm": (40.0, "abort when the close-up estimate moved more than this"),
     "refine_timeout_s": (3.0, "wait this long for a stable close-up estimate"),
@@ -147,6 +151,7 @@ class PickPlaceNode(Node):
         for name, (default, desc) in PARAMS.items():
             setattr(self.p, name, self.declare_parameter(name, default, ParameterDescriptor(description=desc)).value)
         p = self.p
+        self.arm_bias = None   # static servo error measured at the hover (trim_arm), reused for the descent
         self.cg = ReentrantCallbackGroup()
         self.model = ArmModel(table_z=p.table_z)
         self.roll_limit = math.radians(p.roll_limit_deg)
@@ -422,6 +427,10 @@ class PickPlaceNode(Node):
         contact unless stop_on_contact_ok (place: contact = the cube is down)."""
         p = self.p
         j = p.contact_joint
+        # at the hover, in free space: take out the servos' static error, and reuse it below
+        self.arm_bias = self.motion.trim_arm(plan.hover.q, p.trim_tol_deg, int(p.trim_max_iter), p.trim_max_bias_deg)
+        self.feedback("descend", "hover trim " + ", ".join(f"{n.split('_')[1]} {math.degrees(b):+.1f}"
+                                                         for n, b in zip(ARM, self.arm_bias) if abs(b) > 1e-4))
         base = self.motion.mean_lag(j, int(p.descend_lag_samples))
 
         def monitor(samples):
@@ -429,7 +438,7 @@ class PickPlaceNode(Node):
         prev = plan.hover.q
         for i, (h, r) in enumerate(zip(plan.heights, plan.descent)):
             self.feedback("descend", f"tip {h * 100:.1f} cm")
-            res = self.motion.run("arm", [r.q], p.descend_speed, monitor=monitor)
+            res = self.motion.run("arm", [r.q], p.descend_speed, monitor=monitor, bias=self.arm_bias)
             lag = self.motion.mean_lag(j, int(p.descend_lag_samples)) - base
             if res.stopped or lag > p.descend_contact_lag_deg:
                 msg = f"contact at {h * 100:.1f} cm ({j} lag {lag:+.1f} deg over the hover)"
@@ -437,7 +446,7 @@ class PickPlaceNode(Node):
                     self.feedback("descend", msg + ": stopping here")
                     return i
                 self.feedback("descend", msg + ": backing up")
-                self.motion.run("arm", [prev], p.lift_speed)
+                self.motion.run("arm", [prev], p.lift_speed, bias=self.arm_bias)
                 raise Fail("descend", f"something under the jaws: {msg}")
             if not res.ok:
                 raise Fail("descend", f"arm move failed: {res.error}")
@@ -506,7 +515,8 @@ class PickPlaceNode(Node):
         self.feedback(phase, f"{why}: opening and backing up")
         self.gripper_to(self.p.open_deg, self.p.open_speed_deg_s)
         self.hook.restore()
-        self.motion.run("arm", [r.q for r in plan.descent[::-1][1:]] + [plan.hover.q], self.p.lift_speed)
+        self.motion.run("arm", [r.q for r in plan.descent[::-1][1:]] + [plan.hover.q], self.p.lift_speed,
+                        bias=self.arm_bias)
 
     def execute_pick(self, gh):
         res = PickCube.Result()
@@ -540,6 +550,9 @@ class PickPlaceNode(Node):
                 res.wrist_roll_deg = float(math.degrees(plan.roll))
                 res.jaw_tilt_deg = float(plan.grasp.tilt_deg)
                 if gh.request.hover_only:
+                    bias = self.motion.trim_arm(plan.hover.q, p.trim_tol_deg, int(p.trim_max_iter), p.trim_max_bias_deg)
+                    self.feedback("refine", "hover trim " + ", ".join(
+                        f"{n.split('_')[1]} {math.degrees(b):+.1f}" for n, b in zip(ARM, bias) if abs(b) > 1e-4))
                     res.success, res.message = True, f"hovering over {cube} (dry run): {plan.summary()}"
                     gh.succeed()
                     return res
@@ -573,7 +586,8 @@ class PickPlaceNode(Node):
                                 "grasp_h": p.grasp_tip_height, "roll": plan.roll}
                 phase = "lift"
                 self.feedback("lift", f"to {plan.hover_h * 100:.1f} cm")
-                r = self.motion.run("arm", [x.q for x in plan.descent[::-1][1:]] + [plan.hover.q], p.lift_speed)
+                r = self.motion.run("arm", [x.q for x in plan.descent[::-1][1:]] + [plan.hover.q], p.lift_speed,
+                                    bias=self.arm_bias)
                 if not r.ok:
                     raise Fail("lift", f"lift failed: {r.error}")
                 time.sleep(0.3)

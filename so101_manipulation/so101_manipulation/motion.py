@@ -9,6 +9,8 @@ is sent; nothing outside those ever reaches the controller from here.
 from __future__ import annotations
 
 import math
+
+import numpy as np
 import threading
 import time
 from collections import deque
@@ -217,10 +219,32 @@ class Motion:
                 raise MotionError("timeout waiting for the controller")
             time.sleep(0.005)
 
-    def run(self, ctrl, points, speed=None, times=None, monitor=None, settle=True) -> MotionResult:
+    def trim_arm(self, target, tol_deg=0.3, max_iter=3, max_bias_deg=5.0, move_s=0.8):
+        """Free space only: bring the MEASURED arm joints to `target` by adding the static tracking
+        error to the command (at servo P 16 the elbow stays ~2.3 deg short under gravity, which put
+        the jaws 8 mm short and 7 mm low over a cube, 2026-11-22). Returns the bias (rad per joint)
+        to add to nearby commands, e.g. the descent; never call it in contact."""
+        target = np.asarray(target, float)
+        bias = np.zeros(len(ARM))
+        lim = math.radians(max_bias_deg)
+        for _ in range(max_iter):
+            time.sleep(self.settle_s)
+            err = target - np.asarray(self.q_arm())
+            if np.max(np.abs(err)) < math.radians(tol_deg):
+                break
+            bias = np.clip(bias + err, -lim, lim)
+            r = self.run("arm", [target + bias], times=[move_s])
+            if not r.ok:
+                break
+        return bias
+
+    def run(self, ctrl, points, speed=None, times=None, monitor=None, settle=True, bias=None) -> MotionResult:
         """Send and wait; `monitor(samples)` -> True stops the motion (goal canceled: the controller
-        holds where the joints are). Raises Canceled when the action goal is canceled."""
+        holds where the joints are). Raises Canceled when the action goal is canceled. `bias` (arm
+        only, from trim_arm) is added to every point."""
         self.check_cancel()
+        if bias is not None and ctrl == "arm":
+            points = [np.asarray(p, float) + bias for p in points]
         if times is None:
             times = self.timed(ctrl, points, speed)
         t0 = time.monotonic()
