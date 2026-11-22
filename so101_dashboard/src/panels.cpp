@@ -10,6 +10,7 @@
 
 #include <ament_index_cpp/get_package_prefix.hpp>
 
+#include "pick_place_ui.hpp"
 #include "tasks.hpp"
 #include "theme.hpp"
 
@@ -267,6 +268,11 @@ void draw_tasks(State & state, TaskRunner & tasks, bool * open)
     tasks.stop();
   }
   ImGui::PopStyleColor(4);
+  if (task.running && !task.detail.empty()) {   // pick/place feedback
+    ImGui::PushStyleColor(ImGuiCol_Text, theme::DIM);
+    ImGui::TextWrapped("%s", task.detail.c_str());
+    ImGui::PopStyleColor();
+  }
 
   // torque: switching it off takes a second click within CONFIRM_S, because the arm drops
   static double confirm_until = 0.0;
@@ -347,6 +353,10 @@ void draw_tasks(State & state, TaskRunner & tasks, bool * open)
   }
   ImGui::EndDisabled();
 
+  // cube pick and place (so101_manipulation)
+  ImGui::Spacing();
+  draw_cube_section(state, tasks);
+
   // motion settings, folded away by default
   ImGui::Spacing();
   if (ImGui::CollapsingHeader("motion settings")) {
@@ -389,7 +399,7 @@ void draw_task_log(State & state, bool * open)
   if (ImGui::BeginTable("log", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp)) {
     ImGui::TableSetupScrollFreeze(0, 1);
     ImGui::TableSetupColumn("TIME", ImGuiTableColumnFlags_WidthFixed, 80);
-    ImGui::TableSetupColumn("TASK", ImGuiTableColumnFlags_WidthFixed, 90);
+    ImGui::TableSetupColumn("TASK", ImGuiTableColumnFlags_WidthFixed, 130);
     ImGui::TableSetupColumn("RESULT");
     ImGui::TableSetupColumn("TIME s", ImGuiTableColumnFlags_WidthFixed, 60);
     ImGui::TableHeadersRow();
@@ -401,6 +411,16 @@ void draw_task_log(State & state, bool * open)
       ImGui::TextUnformatted(e.label.c_str());
       ImGui::TableNextColumn();
       ImGui::TextColored(e.ok ? theme::OK : theme::ALERT, "%s", e.result.c_str());
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {   // the whole message, and the phases
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 40);
+        ImGui::TextUnformatted(e.result.c_str());
+        if (!e.details.empty()) {
+          ImGui::TextColored(theme::DIM, "%s", e.details.c_str());
+        }
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+      }
       ImGui::TableNextColumn();
       ImGui::Text("%6.1f", e.duration);
     }

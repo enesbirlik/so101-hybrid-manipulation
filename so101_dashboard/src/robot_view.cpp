@@ -14,6 +14,8 @@
 #include <rlImGui.h>
 
 #include "panels.hpp"
+#include "pick_place_ui.hpp"
+#include "tasks.hpp"
 #include "theme.hpp"
 
 namespace so101_dashboard
@@ -349,6 +351,7 @@ void RobotView::draw_table(const LinkPoses & poses)
     const Matrix m = MatrixMultiply(v.origin, poses.at(v.link));
     const Vector3 c = translation(m);
     const float top = c.z + table_size_.z / 2 + 0.0005f;
+    table_top_ = top - 0.0005f;   // clicks on the table hit this plane
     const float hx = table_size_.x / 2, hy = table_size_.y / 2;
     const Color line = theme::to_raylib(ImVec4(theme::CYAN.x, theme::CYAN.y, theme::CYAN.z, 0.13f));
     const Color edge = theme::to_raylib(ImVec4(theme::CYAN.x, theme::CYAN.y, theme::CYAN.z, 0.45f));
@@ -408,6 +411,7 @@ void RobotView::render(const LinkPoses & poses, const LinkPoses & ghost)
     }
   }
   draw_cubes();
+  draw_pick_place_3d();
   const Color fov = theme::to_raylib(ImVec4(theme::ROSE.x, theme::ROSE.y, theme::ROSE.z, 0.8f));
   for (size_t i = 0; i + 1 < fov_world_.size(); i += 2) {
     DrawLine3D(fov_world_[i], fov_world_[i + 1], fov);
@@ -498,35 +502,304 @@ LinkPoses RobotView::ghost_poses(const Ghost & ghost, const JointValues & q, boo
 
 void RobotView::draw_cubes() const
 {
-  for (const auto & c : cubes_) {
+  for (const auto & vc : cubes_) {
+    const CubeMarker & c = vc.marker;
     const auto u8 = [](float v) {return static_cast<unsigned char>(std::clamp(v, 0.0f, 1.0f) * 255.0f);};
     const bool fresh = c.rgba[3] >= 0.5f;
-    const Color fill{u8(c.rgba[0]), u8(c.rgba[1]), u8(c.rgba[2]), static_cast<unsigned char>(fresh ? 200 : 60)};
-    const Color edge{u8(c.rgba[0]), u8(c.rgba[1]), u8(c.rgba[2]), 255};
+    const bool held = vc.index == held_;   // still drawn where it was seen last, faint
+    const Color fill{u8(c.rgba[0]), u8(c.rgba[1]), u8(c.rgba[2]),
+      static_cast<unsigned char>(held ? 30 : fresh ? 200 : 60)};
+    const Color edge{u8(c.rgba[0]), u8(c.rgba[1]), u8(c.rgba[2]), static_cast<unsigned char>(held ? 90 : 255)};
     rlPushMatrix();
     rlTranslatef(c.position[0], c.position[1], c.position[2]);
     rlRotatef(c.yaw * RAD2DEG, 0.0f, 0.0f, 1.0f);
     DrawCube(Vector3Zero(), c.edge, c.edge, c.edge, fill);
     DrawCubeWires(Vector3Zero(), c.edge, c.edge, c.edge, edge);
+    // selection: a double outline that glows; stack target in amber
+    const bool selected = !holding_ && vc.index == selection_.cube;
+    const bool stack = holding_ && vc.index == selection_.stack_on;
+    if (selected || stack) {
+      const ImVec4 & hl = selected ? theme::CYAN : theme::AMBER;
+      const float pulse = 0.65f + 0.35f * std::sin(static_cast<float>(now_s()) * 5.0f);
+      DrawCubeWires(Vector3Zero(), c.edge * 1.2f, c.edge * 1.2f, c.edge * 1.2f, theme::to_raylib(hl));
+      DrawCubeWires(Vector3Zero(), c.edge * 1.4f, c.edge * 1.4f, c.edge * 1.4f,
+        theme::to_raylib(ImVec4(hl.x, hl.y, hl.z, 0.5f * pulse)));
+      DrawCube(Vector3Zero(), c.edge * 1.2f, c.edge * 1.2f, c.edge * 1.2f,
+        theme::to_raylib(ImVec4(hl.x, hl.y, hl.z, 0.12f * pulse)));
+    }
     rlPopMatrix();
   }
 }
 
+bool RobotView::screen_of(Vector3 p, ImVec2 origin, ImVec2 & out) const
+{
+  if (Vector3DotProduct(Vector3Subtract(p, camera_.position),
+    Vector3Subtract(camera_.target, camera_.position)) <= 0)
+  {
+    return false;
+  }
+  const Vector2 s = GetWorldToScreenEx(p, camera_, target_w_, target_h_);
+  out = ImVec2(origin.x + s.x / SUPERSAMPLE, origin.y + s.y / SUPERSAMPLE);
+  return true;
+}
+
 void RobotView::draw_cube_labels(ImVec2 origin, float scale) const
 {
+  (void)scale;
   ImDrawList * dl = ImGui::GetWindowDrawList();
-  for (const auto & c : cubes_) {
-    const Vector3 p{c.position[0], c.position[1], c.position[2] + c.edge};
-    if (Vector3DotProduct(Vector3Subtract(p, camera_.position),
-      Vector3Subtract(camera_.target, camera_.position)) <= 0)
-    {
+  for (const auto & vc : cubes_) {
+    const CubeMarker & c = vc.marker;
+    ImVec2 at;
+    if (!screen_of(Vector3{c.position[0], c.position[1], c.position[2] + c.edge}, origin, at)) {
       continue;
     }
-    const Vector2 s = GetWorldToScreenEx(p, camera_, target_w_, target_h_);
-    char buf[64];
-    snprintf(buf, sizeof(buf), "%s  %.1f, %.1f cm", c.label.c_str(), c.position[0] * 100.0f, c.position[1] * 100.0f);
-    const ImVec4 col(c.rgba[0], c.rgba[1], c.rgba[2], c.rgba[3] >= 0.5f ? 1.0f : 0.5f);
-    dl->AddText(ImVec2(origin.x + s.x * scale + 6, origin.y + s.y * scale - 16), ImGui::GetColorU32(col), buf);
+    char buf[96];
+    const char * tag = vc.index == held_ ? "  (held)" :
+      !holding_ && vc.index == selection_.cube ? "  SELECTED" :
+      holding_ && vc.index == selection_.stack_on ? "  STACK HERE?" : "";
+    snprintf(buf, sizeof(buf), "%s  %.1f, %.1f cm%s", c.label.c_str(), c.position[0] * 100.0f,
+      c.position[1] * 100.0f, tag);
+    const ImVec2 text_at(at.x + 6, at.y - 16);
+    if (*tag && vc.index != held_) {   // a glowing plate behind the selected cube's label
+      const ImVec4 & hl = holding_ ? theme::AMBER : theme::CYAN;
+      const ImVec2 size = ImGui::CalcTextSize(buf);
+      dl->AddRectFilled(ImVec2(text_at.x - 4, text_at.y - 2), ImVec2(text_at.x + size.x + 4, text_at.y + size.y + 2),
+        ImGui::GetColorU32(ImVec4(hl.x, hl.y, hl.z, 0.18f)), 3.0f);
+      dl->AddRect(ImVec2(text_at.x - 4, text_at.y - 2), ImVec2(text_at.x + size.x + 4, text_at.y + size.y + 2),
+        ImGui::GetColorU32(hl), 3.0f);
+      dl->AddText(text_at, ImGui::GetColorU32(hl), buf);
+      continue;
+    }
+    const ImVec4 col(c.rgba[0], c.rgba[1], c.rgba[2], c.rgba[3] >= 0.5f && vc.index != held_ ? 1.0f : 0.5f);
+    dl->AddText(text_at, ImGui::GetColorU32(col), buf);
+  }
+}
+
+void RobotView::draw_pick_place_3d() const
+{
+  // the reach ring: where the pick node can put a cube down; brighter while a cube is held
+  const float a = holding_ ? 0.55f : 0.16f;
+  const Color ring = theme::to_raylib(ImVec4(theme::OK.x, theme::OK.y, theme::OK.z, a));
+  const Color spoke = theme::to_raylib(ImVec4(theme::OK.x, theme::OK.y, theme::OK.z, a * 0.4f));
+  const float z = table_top_ + 0.001f;
+  rlPushMatrix();
+  rlTranslatef(0.0f, 0.0f, z);
+  DrawCircle3D(Vector3Zero(), REACH_MIN_M, Vector3{1, 0, 0}, 0.0f, ring);
+  DrawCircle3D(Vector3Zero(), REACH_MAX_M, Vector3{1, 0, 0}, 0.0f, ring);
+  for (int i = 0; i < 24; ++i) {   // light hatching between the circles
+    const float t = i * 2.0f * PI / 24;
+    DrawLine3D(Vector3{REACH_MIN_M * std::cos(t), REACH_MIN_M * std::sin(t), 0},
+      Vector3{REACH_MAX_M * std::cos(t), REACH_MAX_M * std::sin(t), 0}, spoke);
+  }
+  rlPopMatrix();
+  // the place target: a ghost cube where the held one would go
+  if (holding_ && selection_.has_target && selection_.stack_on < 0) {
+    constexpr float EDGE = 0.03f;
+    const Color fill = theme::to_raylib(ImVec4(theme::OK.x, theme::OK.y, theme::OK.z, 0.22f));
+    const Color edge = theme::to_raylib(theme::OK);
+    rlPushMatrix();
+    rlTranslatef(selection_.x, selection_.y, table_top_ + EDGE / 2);
+    rlRotatef(selection_.any_yaw ? 0.0f : selection_.yaw_deg, 0.0f, 0.0f, 1.0f);
+    rlDrawRenderBatchActive();
+    rlDisableDepthMask();
+    DrawCube(Vector3Zero(), EDGE, EDGE, EDGE, fill);
+    rlDrawRenderBatchActive();
+    rlEnableDepthMask();
+    DrawCubeWires(Vector3Zero(), EDGE, EDGE, EDGE, edge);
+    if (!selection_.any_yaw) {   // the yaw: a tick on the top face along the cube's x
+      DrawLine3D(Vector3{0, 0, EDGE / 2}, Vector3{EDGE * 0.8f, 0, EDGE / 2}, edge);
+    }
+    rlPopMatrix();
+    DrawLine3D(Vector3{selection_.x, selection_.y, table_top_ + EDGE},
+      Vector3{selection_.x, selection_.y, table_top_ + 0.10f}, theme::to_raylib(ImVec4(theme::OK.x, theme::OK.y,
+      theme::OK.z, 0.5f)));
+  }
+}
+
+std::string RobotView::click(State & state, Vector2 px)
+{
+  const Ray ray = GetScreenToWorldRayEx(px, camera_, target_w_, target_h_);
+  // the nearest cube box (enlarged a little: they are small on screen), in the cube's own frame
+  int hit_cube = -1;
+  float hit_distance = 1e9f;
+  for (const auto & vc : cubes_) {
+    const CubeMarker & c = vc.marker;
+    const float cs = std::cos(-c.yaw), sn = std::sin(-c.yaw);
+    const auto to_cube = [&](Vector3 v) {return Vector3{cs * v.x - sn * v.y, sn * v.x + cs * v.y, v.z};};
+    const Ray local{to_cube(Vector3Subtract(ray.position, Vector3{c.position[0], c.position[1], c.position[2]})),
+      to_cube(ray.direction)};
+    const float h = c.edge * 0.5f * 1.3f;
+    const RayCollision hit = GetRayCollisionBox(local, BoundingBox{Vector3{-h, -h, -h}, Vector3{h, h, h}});
+    if (hit.hit && hit.distance < hit_distance) {
+      hit_distance = hit.distance;
+      hit_cube = vc.index;
+    }
+  }
+  // the table plane
+  bool hit_table = false;
+  float tx = 0.0f, ty = 0.0f;
+  if (std::abs(ray.direction.z) > 1e-6f) {
+    const float t = (table_top_ - ray.position.z) / ray.direction.z;
+    if (t > 0 && t < hit_distance) {
+      hit_table = true;
+      tx = ray.position.x + t * ray.direction.x;
+      ty = ray.position.y + t * ray.direction.y;
+    }
+  }
+  if (hit_cube >= 0 && hit_table) {
+    hit_table = false;   // the cube is nearer than the table point behind it
+  }
+
+  std::lock_guard<std::mutex> lock(state.mutex);
+  CubeSelection & sel = state.selection;
+  const bool holding = !state.holding.cube.empty();
+  const int held = cube_index(state.holding.cube);
+  char buf[160];
+  sel.message.clear();
+  if (!holding) {
+    if (hit_cube >= 0) {
+      sel.cube = hit_cube;
+      snprintf(buf, sizeof(buf), "selected K%d", hit_cube);
+    } else {
+      sel.cube = -1;
+      snprintf(buf, sizeof(buf), "deselected");
+    }
+    return buf;
+  }
+  if (hit_cube >= 0) {
+    if (hit_cube == held) {
+      sel.message = "K" + std::to_string(held) + " is the held cube";
+    } else {
+      sel.stack_on = hit_cube;
+      sel.has_target = false;
+      snprintf(buf, sizeof(buf), "stack target K%d", hit_cube);
+      return buf;
+    }
+  } else if (hit_table) {
+    const std::string problem = reach_problem(tx, ty);
+    if (problem.empty()) {
+      sel.has_target = true;
+      sel.x = tx;
+      sel.y = ty;
+      sel.stack_on = -1;
+      snprintf(buf, sizeof(buf), "place target %.1f, %.1f cm", tx * 100.0f, ty * 100.0f);
+      return buf;
+    }
+    sel.message = problem;
+    sel.has_target = false;
+    sel.stack_on = -1;
+  } else {
+    sel.has_target = false;
+    sel.stack_on = -1;
+    return "target cleared";
+  }
+  sel.message_at = now_s();
+  return "refused: " + sel.message;
+}
+
+void RobotView::draw_pick_place_popup(State & state, TaskRunner & tasks, ImVec2 origin, ImVec2 size)
+{
+  const CubeUi ui = cube_ui(state, tasks);
+  // anchor: the selected cube, the stack target or the place target
+  Vector3 anchor{};
+  bool show = false;
+  const int cube = holding(ui) ? ui.sel.stack_on : ui.sel.cube;
+  if (cube >= 0) {
+    for (const auto & vc : cubes_) {
+      if (vc.index == cube) {
+        anchor = Vector3{vc.marker.position[0], vc.marker.position[1], vc.marker.position[2]};
+        show = true;
+      }
+    }
+  } else if (holding(ui) && ui.sel.has_target) {
+    anchor = Vector3{ui.sel.x, ui.sel.y, table_top_ + 0.015f};
+    show = true;
+  }
+  ImVec2 at;
+  if (show && screen_of(anchor, origin, at)) {
+    const ImVec2 popup(300, holding(ui) && cube < 0 ? 104 : 76);   // for the clamping; the height fits itself
+    at = ImVec2(std::clamp(at.x + 24, origin.x + 4, origin.x + size.x - popup.x - 4),
+      std::clamp(at.y + 12, origin.y + 36, origin.y + size.y - popup.y - 30));
+    ImGui::SetCursorScreenPos(at);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(theme::PANEL.x, theme::PANEL.y, theme::PANEL.z, 0.9f));
+    ImGui::PushStyleColor(ImGuiCol_Border, holding(ui) ? (cube >= 0 ? theme::AMBER : theme::OK) : theme::CYAN);
+    if (ImGui::BeginChild("##pick_place_popup", ImVec2(popup.x, 0), ImGuiChildFlags_Borders |
+      ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_AutoResizeY,
+      ImGuiWindowFlags_NoScrollbar))
+    {
+      if (holding(ui)) {
+        if (cube >= 0) {
+          ImGui::TextColored(theme::AMBER, "K%d as the base of a stack", cube);
+        } else {
+          ImGui::TextColored(theme::OK, "put %s here   r %.1f cm", held_name(ui).c_str(),
+            std::hypot(ui.sel.x, ui.sel.y) * 100.0f);
+        }
+      } else {
+        ImGui::TextColored(theme::CYAN, "K%d", cube);
+        if (ui.selected_seen) {
+          ImGui::SameLine();
+          ImGui::TextColored(theme::DIM, "%.1f, %.1f cm   r %.1f cm", ui.selected_x * 100.0f, ui.selected_y * 100.0f,
+            std::hypot(ui.selected_x, ui.selected_y) * 100.0f);
+        }
+      }
+      draw_cube_actions(state, tasks, ui, "popup");
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor(2);
+  }
+  // a refused click: say why for a few seconds
+  if (!ui.sel.message.empty() && now_s() - ui.sel.message_at < 4.0) {
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + 12, origin.y + size.y - 48));
+    ImGui::TextColored(theme::AMBER, "%s", ui.sel.message.c_str());
+  }
+}
+
+void RobotView::run_test_commands(State & state, TaskRunner & tasks)
+{
+  std::deque<std::string> commands;
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    commands.swap(state.test_commands);
+  }
+  for (const auto & line : commands) {
+    std::istringstream in(line);
+    std::string cmd;
+    in >> cmd;
+    std::string result = "ok";
+    if (cmd == "click_world") {   // a click where this base_link point shows up on screen
+      float x = 0, y = 0, z = 0;
+      in >> x >> y >> z;
+      const Vector2 s = GetWorldToScreenEx(Vector3{x, y, z}, camera_, target_w_, target_h_);
+      result = click(state, s);
+    } else if (cmd == "click_view") {   // a click at a fraction of the view
+      float u = 0, v = 0;
+      in >> u >> v;
+      result = click(state, Vector2{u * target_w_, v * target_h_});
+    } else if (cmd == "pick") {
+      result = pick_selected(state, tasks) ? "pick started" : "pick not started";
+    } else if (cmd == "place") {
+      result = place_at_target(state, tasks) ? "place started" : "place not started";
+    } else if (cmd == "stack") {
+      result = stack_on_target(state, tasks) ? "stack started" : "stack not started";
+    } else if (cmd == "yaw") {
+      float yaw = 0;
+      in >> yaw;
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.selection.yaw_deg = yaw;
+      state.selection.any_yaw = false;
+    } else if (cmd == "look") {
+      result = tasks.start_look() ? "look started" : "look not started";
+    } else if (cmd == "stop") {
+      tasks.stop();
+    } else if (cmd == "shot") {   // a screenshot of this window, into the working directory
+      std::string name;
+      in >> name;
+      std::lock_guard<std::mutex> lock(state.mutex);
+      state.screenshot = name.empty() ? "so101_dashboard.png" : name;
+    } else {
+      result = "unknown command";
+    }
+    TraceLog(LOG_INFO, "test hook: %s -> %s", line.c_str(), result.c_str());
   }
 }
 
@@ -556,7 +829,7 @@ void RobotView::update_fov(State & state)
   }
 }
 
-void RobotView::draw(State & state, bool * open)
+void RobotView::draw(State & state, TaskRunner & tasks, bool * open)
 {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   const bool visible = ImGui::Begin(WIN_VIEW, open);
@@ -583,9 +856,36 @@ void RobotView::draw(State & state, bool * open)
     for (const auto & [id, cube] : state.cubes) {
       // the detector publishes in base_link, which is the model root here
       if (model_ && cube.frame == model_->getRoot()->name) {
-        cubes_.push_back(cube);
+        cubes_.push_back(ViewCube{id, cube});
+        if (cubes_.back().marker.label.empty()) {
+          cubes_.back().marker.label = "K" + std::to_string(id);
+        }
       }
     }
+    // cubes only in /cubes/tracked (no markers: the FAKE cube on mock, or a detector without them)
+    for (const auto & [id, t] : state.tracked) {
+      if (!model_ || model_->getRoot()->name != "base_link" || state.cubes.count(id)) {
+        continue;
+      }
+      CubeMarker m;
+      m.frame = "base_link";
+      m.position = t.position;
+      m.yaw = t.yaw;
+      m.edge = t.edge;
+      m.rgba = {theme::TEXT.x, theme::TEXT.y, theme::TEXT.z, 0.9f};
+      m.label = "K" + std::to_string(id) + (t.score >= 0.5f ? "" : " ~");
+      cubes_.push_back(ViewCube{id, m});
+    }
+    // a new held cube: the selection becomes the place target; nothing held: no target
+    if (state.holding.cube != held_cube_) {
+      held_cube_ = state.holding.cube;
+      state.selection.cube = -1;
+      state.selection.stack_on = -1;
+      state.selection.has_target = false;
+    }
+    holding_ = !state.holding.cube.empty();
+    held_ = cube_index(state.holding.cube);
+    selection_ = state.selection;
   }
   if (!model_) {
     ImGui::SetCursorPos(ImVec2(12, 36));
@@ -611,10 +911,27 @@ void RobotView::draw(State & state, bool * open)
     target_h_ = h;
   }
 
+  // the overlays drawn later (toggles, the pick/place popup) take the mouse before the view does
+  ImGui::SetNextItemAllowOverlap();
   ImGui::InvisibleButton("##view", avail, ImGuiButtonFlags_MouseButtonLeft |
     ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
   handle_input(ImGui::IsItemHovered(), ImGui::IsItemActive());
+  // a left click that did not drag (< 4 px of travel) selects; a drag orbits
+  const bool clicked = ImGui::IsItemDeactivated() && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+    ImGui::GetIO().MouseDragMaxDistanceSqr[ImGuiMouseButton_Left] < 16.0f;
   update_camera();
+  if (clicked) {
+    const ImVec2 m = ImGui::GetIO().MousePos;
+    const std::string what = click(state, Vector2{(m.x - pos.x) * SUPERSAMPLE, (m.y - pos.y) * SUPERSAMPLE});
+    TraceLog(LOG_INFO, "3D view click: %s", what.c_str());
+    std::lock_guard<std::mutex> lock(state.mutex);
+    selection_ = state.selection;
+  }
+  run_test_commands(state, tasks);
+  {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    selection_ = state.selection;
+  }
   render(poses, ghost_poses(ghost, q, task_running));
 
   ImGui::SetCursorScreenPos(pos);
@@ -636,8 +953,11 @@ void RobotView::draw(State & state, bool * open)
     ImGui::SetCursorScreenPos(ImVec2(pos.x + avail.x - ImGui::CalcTextSize(buf).x - 12, pos.y + 12));
     ImGui::TextColored(fk_error_mm_ < 1.0 ? theme::DIM : theme::AMBER, "%s", buf);
   }
+  draw_pick_place_popup(state, tasks, pos, avail);
   ImGui::SetCursorScreenPos(ImVec2(pos.x + 12, pos.y + avail.y - 24));
-  ImGui::TextColored(theme::DIM, "drag: orbit   right drag: pan   wheel: zoom   double-click: reset");
+  ImGui::TextColored(theme::DIM, holding_ ?
+    "click: table = place target, cube = stack   drag: orbit   right drag: pan   wheel: zoom" :
+    "click: select a cube   drag: orbit   right drag: pan   wheel: zoom   double-click: reset");
   ImGui::End();
 }
 

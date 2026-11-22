@@ -19,6 +19,8 @@ namespace so101_dashboard
 using JointValues = std::map<std::string, double>;
 using LinkPoses = std::map<std::string, Matrix>;
 
+class TaskRunner;
+
 class RobotView
 {
 public:
@@ -26,7 +28,8 @@ public:
   ~RobotView();  // before CloseWindow
 
   // Draws the "3D VIEW" window. Reloads the model when a new robot description arrives.
-  void draw(State & state, bool * open);
+  // A click (no drag) selects a cube, or, while a cube is held, the place target.
+  void draw(State & state, TaskRunner & tasks, bool * open);
 
   // World transforms (frame = URDF root) of every link for the given joint values.
   LinkPoses forward_kinematics(const JointValues & q) const;
@@ -52,9 +55,18 @@ private:
   void draw_table(const LinkPoses & poses);
   void draw_labels(const LinkPoses & poses, const JointValues & q, ImVec2 origin, float scale) const;
   void check_fk(State & state, const LinkPoses & poses);
-  void update_fov(State & state);
+  void update_fov(State & state);   // camera field of view, from its marker and TF
   void draw_cubes() const;
-  void draw_cube_labels(ImVec2 origin, float scale) const;   // camera field of view, from its marker and TF
+  void draw_cube_labels(ImVec2 origin, float scale) const;
+  // Pick and place: the reach ring, the selection and the place target (3D) ...
+  void draw_pick_place_3d() const;
+  // ... and the popup next to it with the buttons.
+  void draw_pick_place_popup(State & state, TaskRunner & tasks, ImVec2 origin, ImVec2 size);
+  // A click at `px` (render texture pixels): selects a cube or a place target. Returns what it did.
+  std::string click(State & state, Vector2 px);
+  // SO101_DASHBOARD_TEST=1: GUI actions from /so101_dashboard/test.
+  void run_test_commands(State & state, TaskRunner & tasks);
+  bool screen_of(Vector3 p, ImVec2 origin, ImVec2 & out) const;   // false when behind the camera
 
   std::shared_ptr<urdf::Model> model_;
   uint64_t description_version_ = 0;
@@ -77,9 +89,19 @@ private:
 
   double fk_error_mm_ = -1.0;   // FK vs TF at the gripper frame, -1 = not checked yet
   double fk_checked_at_ = -10.0;
-  std::vector<Vector3> fov_world_;
-  std::vector<CubeMarker> cubes_;     // in the model root frame, copied from the state each frame   // line segment end points
+  struct ViewCube
+  {
+    int index = -1;
+    CubeMarker marker;
+  };
+  std::vector<Vector3> fov_world_;   // line segment end points
+  std::vector<ViewCube> cubes_;      // in the model root frame, copied from the state each frame
   std::vector<Vector3> path_;        // tool (gripper_frame_link) positions along the last plan
+  float table_top_ = 0.0f;           // z of the table surface (the grid), base_link
+  CubeSelection selection_;          // copied from the state each frame, for drawing
+  int held_ = -1;                    // held cube index, -1: none
+  bool holding_ = false;
+  std::string held_cube_;            // the last held cube, to notice a change
 };
 
 }  // namespace so101_dashboard

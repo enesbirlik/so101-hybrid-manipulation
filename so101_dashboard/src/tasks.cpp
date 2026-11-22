@@ -57,6 +57,9 @@ TaskRunner::TaskRunner(rclcpp::Node::SharedPtr node, State & state)
   torque_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>("/torque_controller/commands", 1);
   switch_controller_ = node_->create_client<controller_manager_msgs::srv::SwitchController>(
     "/controller_manager/switch_controller");
+  pick_ = rclcpp_action::create_client<PickCube>(node_, "/pick_cube");
+  place_ = rclcpp_action::create_client<PlaceCube>(node_, "/place_cube");
+  overview_ = node_->create_client<Trigger>("/cube_pick_place/overview");
   load_srdf();
 }
 
@@ -112,7 +115,11 @@ bool TaskRunner::move_group_online() const
 void TaskRunner::begin(const std::string & label)
 {
   std::lock_guard<std::mutex> lock(state_.mutex);
-  state_.task = TaskStatus{true, label, "starting", now_s()};
+  state_.task = TaskStatus{};
+  state_.task.running = true;
+  state_.task.label = label;
+  state_.task.phase = "starting";
+  state_.task.started = now_s();
 }
 
 void TaskRunner::log(const std::string & label, const std::string & result, bool ok)
@@ -121,7 +128,7 @@ void TaskRunner::log(const std::string & label, const std::string & result, bool
   const std::time_t now = std::time(nullptr);
   std::strftime(clock, sizeof(clock), "%H:%M:%S", std::localtime(&now));
   std::lock_guard<std::mutex> lock(state_.mutex);
-  state_.task_log.push_front(TaskLogEntry{clock, label, result, 0.0, ok});
+  state_.task_log.push_front(TaskLogEntry{clock, label, result, 0.0, ok, ""});
   if (state_.task_log.size() > LOG_LENGTH) {
     state_.task_log.pop_back();
   }
@@ -186,6 +193,13 @@ void TaskRunner::finish(bool ok, const std::string & result)
   entry.result = result;
   entry.ok = ok;
   entry.duration = now_s() - state_.task.started;
+  // pick/place: every phase with its start, e.g. "search +0.0 s > approach +2.1 s > ..."
+  for (const auto & [phase, at] : state_.task.phases) {
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s%s +%.1f s", entry.details.empty() ? "" : " > ", phase.c_str(),
+      at - state_.task.started);
+    entry.details += buf;
+  }
   const std::time_t started = std::time(nullptr) - static_cast<std::time_t>(entry.duration);
   char buf[16];
   std::strftime(buf, sizeof(buf), "%H:%M:%S", std::localtime(&started));
@@ -333,12 +347,228 @@ void TaskRunner::poll_process()
   }
 }
 
+bool TaskRunner::claim(const std::string & label)
+{
+  {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    if (state_.task.running) {
+      return false;
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cancel_on_accept_ = false;
+  }
+  begin(label);
+  return true;
+}
+
+void TaskRunner::on_phase(const std::string & phase, const std::string & detail)
+{
+  std::lock_guard<std::mutex> lock(state_.mutex);
+  if (!state_.task.running) {
+    return;
+  }
+  if (state_.task.phases.empty() || state_.task.phases.back().first != phase) {
+    state_.task.phases.emplace_back(phase, now_s());
+  }
+  state_.task.phase = phase;
+  state_.task.detail = detail;
+}
+
+void TaskRunner::set_holding(const Holding & h)
+{
+  std::lock_guard<std::mutex> lock(state_.mutex);
+  if (state_.pick_node.received < 0) {   // the node's own state topic, when there is one, is the truth
+    state_.holding = h;
+  }
+}
+
+void TaskRunner::forget_holding()
+{
+  std::lock_guard<std::mutex> lock(state_.mutex);
+  state_.holding = Holding{};
+}
+
+bool TaskRunner::pick_online() const
+{
+  return pick_->action_server_is_ready();
+}
+
+bool TaskRunner::place_online() const
+{
+  return place_->action_server_is_ready();
+}
+
+bool TaskRunner::look_online() const
+{
+  return overview_->service_is_ready();
+}
+
+bool TaskRunner::start_pick(int cube)
+{
+  const std::string key = "cube_" + std::to_string(cube);
+  if (!claim("PICK K" + std::to_string(cube))) {
+    return false;
+  }
+  if (!pick_->action_server_is_ready()) {
+    finish(false, "/pick_cube offline");
+    return false;
+  }
+  PickCube::Goal goal;
+  goal.cube_id = std::to_string(cube);
+  goal.hover_only = false;
+  rclcpp_action::Client<PickCube>::SendGoalOptions callbacks;
+  callbacks.goal_response_callback = [this](rclcpp_action::ClientGoalHandle<PickCube>::SharedPtr handle) {
+      if (!handle) {
+        finish(false, "rejected (pick node busy?)");
+        return;
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      pick_goal_ = handle;
+      if (cancel_on_accept_) {
+        pick_->async_cancel_goal(handle);
+      }
+    };
+  callbacks.feedback_callback = [this](rclcpp_action::ClientGoalHandle<PickCube>::SharedPtr,
+    const std::shared_ptr<const PickCube::Feedback> feedback) {
+      on_phase(feedback->phase, feedback->detail);
+    };
+  callbacks.result_callback = [this, key](const rclcpp_action::ClientGoalHandle<PickCube>::WrappedResult & result) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pick_goal_.reset();
+      }
+      const auto & r = result.result;
+      const std::string message = r ? r->message : "no result";
+      const std::string phase = r ? r->failed_phase : "";
+      if (result.code == rclcpp_action::ResultCode::SUCCEEDED && r && r->success) {
+        set_holding(Holding{key, false, "pick result"});
+        finish(true, message);
+        return;
+      }
+      const bool canceled = result.code == rclcpp_action::ResultCode::CANCELED;
+      // what the pick node now believes (pick_place_node.py): it records the cube after the verify,
+      // and drops the record again only when the lift loses it
+      if (phase == "lift" && message.find("lost the cube") == std::string::npos) {
+        set_holding(Holding{key, true, canceled ? "pick stopped in the lift" : "pick failed in the lift"});
+      } else if (phase == "setup" && message.find("already holding") != std::string::npos) {
+        const size_t at = message.find("already holding ") + 16;
+        set_holding(Holding{message.substr(at, message.find(':', at) - at), false, "pick node"});
+      } else {
+        set_holding(Holding{});
+      }
+      finish(false, canceled ? "stopped: " + message :
+        "failed" + (phase.empty() ? "" : " in " + phase) + ": " + message);
+    };
+  pick_->async_send_goal(goal, callbacks);
+  return true;
+}
+
+bool TaskRunner::start_place(double x, double y, double yaw_deg, int on_cube)
+{
+  char label[48];
+  if (on_cube >= 0) {
+    snprintf(label, sizeof(label), "STACK ON K%d", on_cube);
+  } else {
+    snprintf(label, sizeof(label), "PLACE %.1f,%.1f", x * 100.0, y * 100.0);
+  }
+  if (!claim(label)) {
+    return false;
+  }
+  if (!place_->action_server_is_ready()) {
+    finish(false, "/place_cube offline");
+    return false;
+  }
+  PlaceCube::Goal goal;
+  goal.x = x;
+  goal.y = y;
+  goal.yaw_deg = yaw_deg;
+  goal.on_cube_id = on_cube >= 0 ? std::to_string(on_cube) : "";
+  rclcpp_action::Client<PlaceCube>::SendGoalOptions callbacks;
+  callbacks.goal_response_callback = [this](rclcpp_action::ClientGoalHandle<PlaceCube>::SharedPtr handle) {
+      if (!handle) {
+        finish(false, "rejected (pick node busy?)");
+        return;
+      }
+      std::lock_guard<std::mutex> lock(mutex_);
+      place_goal_ = handle;
+      if (cancel_on_accept_) {
+        place_->async_cancel_goal(handle);
+      }
+    };
+  callbacks.feedback_callback = [this](rclcpp_action::ClientGoalHandle<PlaceCube>::SharedPtr,
+    const std::shared_ptr<const PlaceCube::Feedback> feedback) {
+      on_phase(feedback->phase, feedback->detail);
+    };
+  callbacks.result_callback = [this](const rclcpp_action::ClientGoalHandle<PlaceCube>::WrappedResult & result) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        place_goal_.reset();
+      }
+      const auto & r = result.result;
+      const std::string message = r ? r->message : "no result";
+      const std::string phase = r ? r->failed_phase : "";
+      if (result.code == rclcpp_action::ResultCode::SUCCEEDED && r && r->success) {
+        set_holding(Holding{});
+        finish(true, message);
+        return;
+      }
+      const bool canceled = result.code == rclcpp_action::ResultCode::CANCELED;
+      // the node drops its record once the jaws opened (release done), and refuses without a cube
+      if (phase == "retreat" || (phase == "setup" && message.find("not holding") != std::string::npos)) {
+        set_holding(Holding{});
+      } else if (phase == "release") {
+        std::lock_guard<std::mutex> lock(state_.mutex);
+        if (state_.pick_node.received < 0) {
+          state_.holding.uncertain = true;
+          state_.holding.source = "place stopped in the release";
+        }
+      }
+      finish(false, canceled ? "stopped: " + message :
+        "failed" + (phase.empty() ? "" : " in " + phase) + ": " + message);
+    };
+  place_->async_send_goal(goal, callbacks);
+  return true;
+}
+
+bool TaskRunner::start_look()
+{
+  if (!claim("LOOK")) {
+    return false;
+  }
+  if (!overview_->service_is_ready()) {
+    finish(false, "/cube_pick_place/overview offline");
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    state_.task.phase = "overview";
+  }
+  overview_->async_send_request(std::make_shared<Trigger::Request>(),
+    [this](rclcpp::Client<Trigger>::SharedFuture done) {
+      const auto response = done.get();
+      finish(response->success, response->message.empty() ? (response->success ? "done" : "failed") :
+      response->message);
+    });
+  return true;
+}
+
 void TaskRunner::stop()
 {
   std::lock_guard<std::mutex> lock(mutex_);
   if (goal_) {
     move_group_->async_cancel_goal(goal_);
   }
+  // pick/place: cancel the goal (the node stops its moves, the gripper is left as it is); a goal
+  // still on its way is canceled as soon as it is accepted
+  if (pick_goal_) {
+    pick_->async_cancel_goal(pick_goal_);
+  }
+  if (place_goal_) {
+    place_->async_cancel_goal(place_goal_);
+  }
+  cancel_on_accept_ = true;
   // Every goal on the trajectory controllers, whoever sent it: the arm holds where it is.
   for (const auto & c : controllers_) {
     if (c->action_server_is_ready()) {
