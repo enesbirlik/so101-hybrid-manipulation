@@ -637,7 +637,16 @@ class PickPlaceNode(Node):
         try:
             self.check_preconditions()
             if self.holding is None:
-                raise Fail("setup", "not holding a cube (PickCube first)")
+                # e.g. after a restart of this node with a cube still between the jaws: trust the grip
+                # itself (same rule as the verify after a pick), never an uncertain one
+                g = self.grip_measured_deg()
+                state, why = sg.grip_state(g, self.floor_deg, self.sg,
+                                           self.motion.gripper_current_ma(self.p.current_window_s))
+                if state != sg.HELD:
+                    raise Fail("setup", f"not holding a cube (PickCube first): {why}")
+                self.holding = {"cube": "cube (held at start)", "hold_deg": self.floor_deg, "contact_deg": g,
+                                "grasp_h": self.p.grasp_tip_height, "roll": self.motion.q_arm()[4]}
+                self.feedback("setup", f"a cube is between the jaws: {why}")
             p, req, held = self.p, gh.request, self.holding
             grip = held["hold_deg"]
             yaws = None
