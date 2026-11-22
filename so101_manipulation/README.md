@@ -265,6 +265,7 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 | `grasp_tip_height` | `0.011` | fixed jaw tip above the cube's bottom at the grasp |
 | `hover_height` | `0.07` | fixed jaw tip above the cube's bottom at the hover |
 | `retreat_clear_m` | `0.02` | after a release the jaw tips rise this far over the released cube's top |
+| `retreat_wide_open_deg` | `50.0` | ...else the jaws open this wide and lean a little to rise off the cube |
 | `retreat_max_back_m` | `0.08` | ...drawing back toward the base by up to this when straight up is out of reach |
 | `stack_snap_m` | `0.012` | stacking: the lower cube's top snaps to a whole cube level when this close |
 | `stack_min_rise_m` | `0.01` | stacking: the lowest hover above the release height (vertical reach ends ~9 cm up) |

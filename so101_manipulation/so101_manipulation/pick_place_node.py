@@ -37,7 +37,7 @@ from so101_manipulation_interfaces.action import PickCube, PlaceCube
 
 from . import soft_grasp as sg
 from .cube_tracker import FrameClock, cube_key, make_cube_tracker
-from .kinematics import ARM
+from .kinematics import ARM, within_limits
 from .grasp import (WEIGHT_TILTED, contact_watch, GraspPlanner, aim_view_pose, camera_pose, default_views, load_fisheye,
                     load_hand_eye, search_order, view_coverage, visible)
 from .hooks import GripperTorqueLimitHook
@@ -83,6 +83,7 @@ PARAMS = {
     "grasp_tip_height": (0.011, "fixed jaw tip above the cube's bottom at the grasp"),
     "hover_height": (0.07, "fixed jaw tip above the cube's bottom at the hover"),
     "retreat_clear_m": (0.02, "after a release the jaw tips rise this far over the released cube's top"),
+    "retreat_wide_open_deg": (50.0, "...else the jaws open this wide and lean a little to rise off the cube"),
     "retreat_max_back_m": (0.08, "...drawing back toward the base by up to this when straight up is out of reach"),
     "stack_snap_m": (0.012, "stacking: the lower cube's top snaps to a whole cube level when this close"),
     "stack_min_rise_m": (0.01, "stacking: the lowest hover above the release height (vertical reach ends ~9 cm up)"),
@@ -655,6 +656,32 @@ class PickPlaceNode(Node):
                 self.feedback("retreat", f"clear of the cube: tip {h_now * 100:.1f} -> {goal_h * 100:.1f} cm"
                                          + (f", {d * 100:.0f} cm back" if d > 0 else ""))
                 self.motion.run("arm", [r.q], p.lift_speed)
+                return
+        # Out of vertical reach (third level): open the jaws wide (the moving jaw swings up and away) and
+        # let them lean a little, rising straight up; every jaw tip over the cube may only go up along
+        # the joint-space path (how the real arm got off a 3-level stack, 2026-11-22).
+        wide = math.radians(p.retreat_wide_open_deg)
+        self.gripper_to(p.retreat_wide_open_deg, p.open_speed_deg_s)
+        q_now = np.asarray(self.motion.q_arm())
+        start = self.model.tips(q_now, wide)[1:]
+        foot = self.edge / 2 + 0.014
+
+        def over(pt):
+            return abs(pt[0] - xy0[0]) < foot and abs(pt[1] - xy0[1]) < foot
+        mid = (start[0][:2] + start[1][:2]) / 2
+        for h in (goal_h, goal_h - 0.005, goal_h - 0.01):
+            r = self.planner.solve(mid, h, None, wide, 0.5, vertical_weight=15.0, roll_hint=float(q_now[4]),
+                                   seeds=[q_now], roll_weight=0.05)
+            q1 = np.asarray(r.q)
+            if r.pos_err_mm > 3 or abs(q1[4]) > self.roll_limit or within_limits(q1, self.roll_limit):
+                continue
+            rises = all(pt[2] >= st[2] - 3e-4
+                        for s_ in np.linspace(0, 1, 40)
+                        for pt, st in zip(self.model.tips(q_now + s_ * (q1 - q_now), wide)[1:], start) if over(st))
+            if rises:
+                self.feedback("retreat", f"clear of the cube: jaws {p.retreat_wide_open_deg:.0f} deg, leaning "
+                                         f"{r.tilt_deg:.0f} deg, tip {h_now * 100:.1f} -> {h * 100:.1f} cm")
+                self.motion.run("arm", [q1], p.lift_speed * 0.5)
                 return
         self.get_logger().warn(f"no pose {p.retreat_clear_m * 100:.0f} cm over the released cube: the jaws stay at "
                                f"{h_now * 100:.1f} cm (cube top {top * 100:.1f} cm)")
