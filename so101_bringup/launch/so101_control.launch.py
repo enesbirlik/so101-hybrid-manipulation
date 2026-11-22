@@ -41,4 +41,5 @@ def generate_launch_description():
         spawner("arm_controller"),
         spawner("gripper_controller"),
         spawner("torque_controller"),
+        spawner("gripper_torque_controller"),
     ])

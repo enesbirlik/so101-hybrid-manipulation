@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "pluginlib/class_list_macros.hpp"
@@ -40,7 +41,6 @@ CallbackReturn SO101Hardware::on_init(const hardware_interface::HardwareComponen
   }
   const auto & info = get_hardware_info();
   port_ = param(info, "port", "");
-  torque_limit_ = std::stoi(param(info, "torque_limit", "1000"));
   acceleration_ = std::stoi(param(info, "acceleration", "0"));
   goal_speed_ = std::stoi(param(info, "goal_speed", "0"));
   max_failures_ = std::stoi(param(info, "max_bus_failures", "5"));
@@ -71,13 +71,20 @@ CallbackReturn SO101Hardware::on_init(const hardware_interface::HardwareComponen
     j.direction = c["direction"].as<int>();
     joints_.push_back(j);
     ids_.push_back(j.id);
-    // joint <param>, else hardware <param>, else the built-in gains
+    // joint <param>, else hardware <param>, else the built-in gains / full torque
     try {
       gains_.push_back(resolve_gains(info, joint));
+      torque_ceiling_.push_back(resolve_torque_limit(info, joint));
     } catch (const std::invalid_argument & e) {
       RCLCPP_FATAL(LOGGER, "%s", e.what());
       return CallbackReturn::ERROR;
     }
+    torque_applied_.push_back(torque_ceiling_.back());
+    auto has = [](const auto & interfaces) {
+        return std::any_of(interfaces.begin(), interfaces.end(), [](const auto & i) {return i.name == "torque_limit";});
+      };
+    torque_command_.push_back(has(joint.command_interfaces));
+    torque_state_.push_back(has(joint.state_interfaces));
   }
   // Telemetry interfaces are optional: all four on every joint, or none.
   telemetry_ = std::all_of(info.joints.begin(), info.joints.end(), [](const auto & joint) {
@@ -89,9 +96,15 @@ CallbackReturn SO101Hardware::on_init(const hardware_interface::HardwareComponen
       return gpio.name == "torque" && !gpio.command_interfaces.empty() &&
              gpio.command_interfaces.front().name == "enable";
     });
-  RCLCPP_INFO(LOGGER, "%zu joints from %s%s%s", joints_.size(), calibration_file.c_str(),
+  std::string runtime_limits;
+  for (size_t i = 0; i < joints_.size(); ++i) {
+    if (torque_command_[i]) {
+      runtime_limits += (runtime_limits.empty() ? ", runtime torque limit on " : " ") + joints_[i].name + "/torque_limit";
+    }
+  }
+  RCLCPP_INFO(LOGGER, "%zu joints from %s%s%s%s", joints_.size(), calibration_file.c_str(),
               telemetry_ ? ", with load/current/temperature/voltage" : "",
-              torque_gpio_ ? ", torque switch on torque/enable" : "");
+              torque_gpio_ ? ", torque switch on torque/enable" : "", runtime_limits.c_str());
   return CallbackReturn::SUCCESS;
 }
 
@@ -148,8 +161,16 @@ CallbackReturn SO101Hardware::on_activate(const rclcpp_lifecycle::State &)
       bus_->write_u8(j.id, ACCELERATION, static_cast<uint8_t>(acceleration_));
       bus_->write_u16(j.id, GOAL_SPEED, static_cast<uint16_t>(goal_speed_));
       bus_->write_u16(j.id, GOAL_POSITION, static_cast<uint16_t>(servos[i].ticks));
+      // the limit before the torque comes on, so a lowered one is never exceeded
+      bus_->write(j.id, TORQUE_LIMIT, torque_limit_bytes(torque_ceiling_[i]));
+      torque_applied_[i] = torque_ceiling_[i];
+      if (torque_command_[i]) {
+        set_command(j.name + "/torque_limit", std::numeric_limits<double>::quiet_NaN());  // a stale runtime value does not come back
+      }
+      if (torque_state_[i]) {
+        set_state(j.name + "/torque_limit", torque_ceiling_[i]);
+      }
       bus_->write_u8(j.id, TORQUE_ENABLE, 1);
-      bus_->write_u16(j.id, TORQUE_LIMIT, static_cast<uint16_t>(torque_limit_));
     }
   } catch (const FeetechError & e) {
     RCLCPP_FATAL(LOGGER, "%s", e.what());
@@ -169,9 +190,10 @@ CallbackReturn SO101Hardware::on_activate(const rclcpp_lifecycle::State &)
   std::string gains;
   for (size_t i = 0; i < joints_.size(); ++i) {
     gains += (i ? ", " : "") + joints_[i].name + " " + std::to_string(gains_[i].p) + "/" +
-             std::to_string(gains_[i].d) + "/" + std::to_string(gains_[i].i);
+             std::to_string(gains_[i].d) + "/" + std::to_string(gains_[i].i) + " " +
+             std::to_string(torque_ceiling_[i] / 10) + "." + std::to_string(torque_ceiling_[i] % 10) + "%";
   }
-  RCLCPP_INFO(LOGGER, "torque on, holding the present pose (P/D/I: %s)", gains.c_str());
+  RCLCPP_INFO(LOGGER, "torque on, holding the present pose (P/D/I torque limit: %s)", gains.c_str());
   return CallbackReturn::SUCCESS;
 }
 
@@ -257,6 +279,11 @@ return_type SO101Hardware::read(const rclcpp::Time &, const rclcpp::Duration &)
   if (torque_gpio_) {
     set_state("torque/enable", torque_on_ ? 1.0 : 0.0);
   }
+  for (size_t i = 0; i < joints_.size(); ++i) {
+    if (torque_state_[i]) {
+      set_state(joints_[i].name + "/torque_limit", torque_applied_[i]);
+    }
+  }
   return return_type::OK;
 }
 
@@ -274,11 +301,54 @@ void SO101Hardware::set_torque(bool on)
       resync_ = true;
     }
     bus_->sync_write(ids_, TORQUE_ENABLE, std::vector<std::vector<uint8_t>>(ids_.size(), {on ? uint8_t{1} : uint8_t{0}}));
+    if (on) {
+      // Precaution: the limits again, in case a torque on resets them (not seen, not ruled out).
+      std::vector<std::vector<uint8_t>> limits;
+      for (const int v : torque_applied_) {
+        limits.push_back(torque_limit_bytes(v));
+      }
+      bus_->sync_write(ids_, TORQUE_LIMIT, limits);
+    }
     torque_on_ = on;
     RCLCPP_INFO(LOGGER, on ? "torque on, holding the present pose" : "torque off: the arm moves freely");
   } catch (const FeetechError & e) {
     // the command stays: tried again next cycle
     RCLCPP_WARN_THROTTLE(LOGGER, *rclcpp::Clock::make_shared(), 1000, "torque switch: %s", e.what());
+  }
+}
+
+void SO101Hardware::write_torque_limits()
+{
+  // Only the joints whose runtime command changed the limit, in one SYNC WRITE (no reply, about
+  // 0.1 ms on the bus). Nothing is sent in the cycles where nothing changed.
+  std::vector<uint8_t> ids;
+  std::vector<std::vector<uint8_t>> data;
+  std::vector<std::pair<size_t, int>> changed;
+  for (size_t i = 0; i < joints_.size(); ++i) {
+    if (!torque_command_[i]) {
+      continue;
+    }
+    const auto value = torque_limit_from_command(get_command<double>(joints_[i].name + "/torque_limit"), torque_ceiling_[i]);
+    if (value && *value != torque_applied_[i]) {
+      ids.push_back(joints_[i].id);
+      data.push_back(torque_limit_bytes(*value));
+      changed.emplace_back(i, *value);
+    }
+  }
+  if (ids.empty()) {
+    return;
+  }
+  try {
+    bus_->sync_write(ids, TORQUE_LIMIT, data);
+  } catch (const FeetechError & e) {
+    // the command stays: tried again next cycle
+    RCLCPP_WARN_THROTTLE(LOGGER, *rclcpp::Clock::make_shared(), 1000, "torque limit: %s", e.what());
+    return;
+  }
+  for (const auto & [i, value] : changed) {
+    RCLCPP_INFO_THROTTLE(LOGGER, *rclcpp::Clock::make_shared(), 500, "%s torque limit %d.%d %%",
+                         joints_[i].name.c_str(), value / 10, value % 10);
+    torque_applied_[i] = value;
   }
 }
 
@@ -290,6 +360,8 @@ return_type SO101Hardware::write(const rclcpp::Time &, const rclcpp::Duration &)
       set_torque(enable > 0.5);
     }
   }
+  // Before the goals, so a lowered limit is in place when a close command arrives in the same cycle.
+  write_torque_limits();
   if (!torque_on_) {
     return return_type::OK;  // limp: no goals to send
   }

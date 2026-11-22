@@ -9,6 +9,8 @@ controller_manager:
       type: joint_trajectory_controller/JointTrajectoryController
     torque_controller:
       type: forward_command_controller/ForwardCommandController
+    gripper_torque_controller:
+      type: forward_command_controller/ForwardCommandController
 
 arm_controller:
   ros__parameters:
@@ -33,3 +35,12 @@ torque_controller:
   ros__parameters:
     joints: [torque]
     interface_name: enable
+
+# /gripper_torque_controller/commands (std_msgs/Float64MultiArray): the gripper servo's torque limit,
+# 0.1 % units: [250.0] = 25 %. Clamped to 0..the gripper's torque_limit parameter (default 1000), so
+# [1000.0] restores it. Applied before the next goal position; it stays until changed (also after
+# this controller is deactivated) and is reset to the parameter when the hardware is activated.
+gripper_torque_controller:
+  ros__parameters:
+    joints: [gripper]
+    interface_name: torque_limit
