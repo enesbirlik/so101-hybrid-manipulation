@@ -40,6 +40,7 @@ from .cube_tracker import FrameClock, cube_key, make_cube_tracker
 from .kinematics import ARM, within_limits
 from .grasp import (WEIGHT_TILTED, contact_watch, GraspPlanner, aim_view_pose, camera_pose, default_views, load_fisheye,
                     load_hand_eye, search_order, view_coverage, visible)
+from . import clutter as cl
 from .hooks import GripperTorqueLimitHook
 from .kinematics import ArmModel, perception_config_dir
 from .reach_map import publish_reach
@@ -113,7 +114,13 @@ PARAMS = {
     "trim_settle_s": (0.25, "hover trim: wait before each measurement"),
     "refine_min_shift_mm": (2.0, "re-target when the close-up estimate moved more than this"),
     "refine_max_shift_mm": (40.0, "abort when the close-up estimate moved more than this"),
-    "refine_timeout_s": (3.0, "wait this long for a stable close-up estimate"),
+    "refine_timeout_s": (3.0, "wait this long for refine_min_obs agreeing close-up observations"),
+    "refine_extra_s": (2.0, "...and up to this much longer while the cube is seen but not yet agreed on"),
+    "refine_min_obs": (4, "close-up: per-frame observations after the settle that must agree (the detector's "
+                          "filter still holds the far view and is not used here)"),
+    "refine_agree_mm": (3.0, "close-up: every observation within this of their median (and obs_max_yaw_spread_deg)"),
+    "refine_look_rise_m": (0.04, "close-up: cube in none of the frames at the hover: look again from this much higher "
+                                 "(0 = off)"),
     "refine_required": (False, "abort when the close-up sees no stable cube (else keep the far estimate)"),
     # contact on the way down (arm)
     "contact_joint": ("shoulder_lift", "joint whose lag (reference - feedback) shows a contact"),
@@ -160,6 +167,12 @@ PARAMS = {
     "torque_limit_topic": ("/gripper_torque_controller/commands", "std_msgs/Float64MultiArray command topic"),
     "torque_limit_timeout_s": (3.0, "abort when the torque_limit readback does not match within this"),
     "torque_limit_required": (True, "abort when the torque limit interface is missing (skipped on mock hardware)"),
+    # other cubes (clutter)
+    "clutter_check": (True, "treat the other cubes the node knows (memory) as obstacles for the jaws"),
+    "clutter_margin_mm": (5.0, "smallest distance between the hand (jaw / camera meshes below a cube's top + this) "
+                               "and another cube along the hover-descent-grasp move"),
+    "clutter_min_side_mm": (8.0, "smallest opening tried when the full one hits a neighbour: jaw gap = cube + 2 x this"),
+    "clutter_max_age_s": (600.0, "cubes last seen longer ago than this are not obstacles"),
     # place
     "release_gap": (0.002, "release this much above the surface (contact stops earlier)"),
     "stack_max_age_s": (60.0, "the cube to stack on must have been seen this recently"),
@@ -248,6 +261,11 @@ class PickPlaceNode(Node):
                                            p.torque_limit_topic, p.torque_limit_timeout_s, p.torque_limit_required)
         self.expected_contact = sg.expected_contact_deg(p.cube_edge_mm, p.gap_zero_mm, p.gap_per_deg_mm)
         self.edge = p.cube_edge_mm / 1000
+        # clutter: the jaws' and camera's mesh points (other cubes are obstacles), and the smallest
+        # opening the fallback may use (never below the closing ramp's fast part)
+        self.footprint = cl.HandFootprint(self.model)
+        self.min_open_deg = max(cl.min_open_deg(p.cube_edge_mm, p.clutter_min_side_mm, p.gap_zero_mm, p.gap_per_deg_mm),
+                                self.expected_contact + p.contact_window_deg + 1.0, self.floor_deg + 2.0)
         self.busy = threading.Lock()
         self.status = {"state": "idle", "action": "", "cube": "", "phase": "", "held": None, "holding": None,
                        "last": None}
@@ -497,17 +515,6 @@ class PickPlaceNode(Node):
 
     # --- perception helpers -------------------------------------------------------------------
 
-    def wait_stable(self, cube, since, timeout):
-        end = time.monotonic() + timeout
-        est = None
-        while time.monotonic() < end:
-            self.motion.check_cancel()
-            est = self.tracker.get(cube, since=since)
-            if est is not None and est.stable:
-                return est
-            time.sleep(0.05)
-        return None
-
     def surface_base(self, est):
         """Height of the cube's bottom above the table (0 on the table, ~edge on another cube)."""
         b = float(est.centre[2] - self.edge / 2 - self.model.table_z)
@@ -587,43 +594,145 @@ class PickPlaceNode(Node):
 
     # --- pick ---------------------------------------------------------------------------------
 
-    def plan_grasp(self, est, prefer_roll=None):
+    # --- other cubes as obstacles (clutter) ----------------------------------------------------
+
+    def neighbours(self, exclude, xy, bottom=0.0):
+        """Obstacles: every cube in the memory (seen within clutter_max_age_s, not in the jaws) except
+        `exclude`, within reach of the hand at xy. A cube's top comes from its height (stacks). Cubes
+        under the target (xy within half an edge, top <= `bottom`, the target's bottom above the
+        table, + 8 mm) are its support, like the table, not obstacles."""
+        p = self.p
+        if not p.clutter_check:
+            return []
+        self.update_memory()          # the 0.5 s timer may not have run yet (e.g. right after start-up)
+        now = time.monotonic()
+        with self.memory_lock:
+            items = [(k, dict(m)) for k, m in self.memory.items()]
+        out = []
+        for k, m in items:
+            if k in exclude or m["centre"] is None or now - m["t"] > p.clutter_max_age_s:
+                continue
+            c = np.asarray(m["centre"], float)
+            top = float(c[2] + self.edge / 2 - self.model.table_z)
+            if np.linalg.norm(c[:2] - np.asarray(xy, float)[:2]) < self.edge / 2 and top <= bottom + 0.008:
+                continue            # under the target: its support
+            out.append(cl.Obstacle(k, c[:2].copy(), float(m["yaw"]), max(top, self.edge), self.edge))
+        return cl.near(out, xy)
+
+    def clutter_accept(self, obstacles, grips_deg, release_deg=None):
+        """accept(plan) for the planner (clutter.make_accept with this node's margin and cube edge)."""
+        return cl.make_accept(self.footprint, obstacles, grips_deg, self.p.clutter_margin_mm / 1000, self.edge,
+                              release_deg=release_deg)
+
+    def openings(self, obstacles):
+        """Jaw openings to try [deg], largest first (clutter.openings)."""
+        return cl.openings(self.p.open_deg, self.min_open_deg, obstacles)
+
+    def clutter_refusal(self, what, xy, accepts):
+        return cl.refusal(what, xy, accepts, self.p.clutter_margin_mm / 1000, self.min_open_deg)
+
+    def plan_grasp(self, cube, est, prefer_roll=None):
+        """Grasp plan for `cube` at `est`, clear of the other cubes the node knows (clutter.plan_among:
+        a closing direction whose jaws stay clear, else a smaller opening, else a refusal naming the
+        neighbour). plan.open_deg = the jaw opening to approach with."""
         base = self.surface_base(est)
         p = self.p
-        plan, msg = self.planner.plan_cube(est.centre[:2], est.yaw, math.radians(p.open_deg), p.hover_height + base,
-                                           p.hover_min_height + base, p.grasp_tip_height + base, p.descend_step,
-                                           p.gap_fraction, prefer_roll=prefer_roll, cube_bottom=base, edge=self.edge)
+        obstacles = self.neighbours({cube}, est.centre[:2], base)
+        t0 = time.monotonic()
+
+        def plan_fn(open_deg, accept):
+            return self.planner.plan_cube(est.centre[:2], est.yaw, math.radians(open_deg), p.hover_height + base,
+                                          p.hover_min_height + base, p.grasp_tip_height + base, p.descend_step,
+                                          p.gap_fraction, prefer_roll=prefer_roll, cube_bottom=base, edge=self.edge,
+                                          accept=accept)
+        plan, msg, accepts = cl.plan_among(plan_fn, self.footprint, obstacles, p.open_deg, self.min_open_deg,
+                                           p.clutter_margin_mm / 1000, self.edge)
         if plan is None:
-            raise Fail("approach", msg)
+            raise Fail("approach", self.clutter_refusal(f"no clear grasp of {cube}", est.centre[:2], accepts) or msg)
+        if obstacles:
+            near_ = min(obstacles, key=lambda o: np.linalg.norm(o.xy - est.centre[:2]))
+            self.get_logger().info(
+                f"clutter: {len(obstacles)} cube(s) near {cube} (closest {near_.describe(est.centre[:2])}): closing along "
+                f"{math.degrees(plan.close_yaw):+.0f} deg, jaws {plan.open_deg:.1f} deg, hand {plan.clutter_m * 1000:.0f} mm "
+                f"from {plan.clutter_with or '-'}; {sum(a.stats['rejected'] for a in accepts)} option(s) dropped "
+                f"({'; '.join(sorted({o.name for o in obstacles}))}); {time.monotonic() - t0:.1f} s")
         return plan
 
+    def close_up(self, cube, since):
+        """Close-up estimate from per-frame detections taken after `since` (not the detector's filter,
+        whose window still holds the far view): stable once refine_min_obs of them agree within
+        refine_agree_mm. Waits refine_timeout_s after `since`, and up to refine_extra_s longer while
+        the cube is seen but not yet agreed on. (estimate or None, why)."""
+        p = self.p
+        n_min, agree = int(p.refine_min_obs), float(p.refine_agree_mm)
+        end = since + p.refine_timeout_s
+        hard_end = end + max(0.0, p.refine_extra_s)
+        est = None
+        while True:
+            self.motion.check_cancel()
+            now = time.monotonic()
+            est = self.tracker.fresh(cube, since, n_min, agree, p.obs_max_yaw_spread_deg)
+            if est is not None and est.stable:
+                return est, ""
+            if now > hard_end or (now > end and est is None):
+                break
+            time.sleep(0.05)
+        frames = self.frames.count_since(since)
+        if frames == 0:
+            return None, ("the detector processed no frame since the arm stopped (is it running? its motion gate "
+                          "ignores frames while a joint reports > max_joint_speed)")
+        if est is None:
+            return None, f"{cube} in none of the {frames} frames since the arm stopped"
+        return None, (f"{est.count} close-up observations in {frames} frames do not agree: spread "
+                      f"{est.spread_mm:.1f} mm / {est.yaw_spread_deg:.1f} deg (limit {agree:.1f} mm)")
+
     def refine(self, cube, est, plan):
-        """Close-up re-detection at the hover. Any face of the cube counts (the 2026-11-21 scripts
-        skipped the refinement when the close-up saw another part of the object). Returns
-        (est, plan, total shift mm)."""
+        """Close-up re-detection at the hover from fresh per-frame detections (close_up). Any face of
+        the cube counts (the 2026-11-21 scripts skipped the refinement when the close-up saw another
+        part of the object). Returns (est, plan, total shift mm)."""
         p = self.p
         total = 0.0
         for k in range(int(p.refine_max_iter)):
             since = time.monotonic() + p.obs_settle_s
-            new = self.wait_stable(cube, since, p.refine_timeout_s + p.obs_settle_s)
+            new, why = self.close_up(cube, since)
+            if new is None and "in none of" in why and p.refine_look_rise_m > 0:
+                # the cube is in no frame from the hover (behind a jaw, or off the image): look again from
+                # higher up, then come back down to the (re-planned) hover
+                up = self.planner.solve_at(plan, plan.hover_h + p.refine_look_rise_m,
+                                           math.radians(plan.open_deg or p.open_deg))
+                if up.ok:
+                    self.feedback("refine", f"{why}: looking from {p.refine_look_rise_m * 100:.0f} cm higher")
+                    r = self.motion.run("arm", [up.q], p.approach_speed)
+                    if not r.ok:
+                        raise Fail("refine", f"look-up move failed: {r.error}")
+                    new, why = self.close_up(cube, time.monotonic() + p.obs_settle_s)
+                    if new is None:
+                        r = self.motion.run("arm", [plan.hover.q], p.approach_speed)
+                        if not r.ok:
+                            raise Fail("refine", f"move back to the hover failed: {r.error}")
             if new is None:
                 if p.refine_required:
-                    raise Fail("refine", f"no stable close-up view of {cube}")
-                self.feedback("refine", "no stable close-up estimate: keeping the far one")
+                    raise Fail("refine", f"no stable close-up view of {cube}: {why}")
+                self.feedback("refine", f"no stable close-up estimate ({why}): keeping the far one")
                 break
             shift = float(np.linalg.norm(new.centre[:2] - est.centre[:2]) * 1000)
             dyaw = math.degrees(sg_fold(new.yaw - est.yaw))
-            self.feedback("refine", f"close-up {k + 1}: ({new.centre[0] * 100:.1f}, {new.centre[1] * 100:.1f}) cm, "
-                                    f"shift {shift:.1f} mm, yaw {dyaw:+.1f} deg")
+            self.feedback("refine", f"close-up {k + 1}: ({new.centre[0] * 100:.1f}, {new.centre[1] * 100:.1f}) cm from "
+                                    f"{new.count} frames (spread {new.spread_mm:.1f} mm), shift {shift:.1f} mm, "
+                                    f"yaw {dyaw:+.1f} deg")
             if shift > p.refine_max_shift_mm:
                 raise Fail("refine", f"close-up estimate {shift:.0f} mm from the far one (max {p.refine_max_shift_mm:.0f}): "
                                      "wrong cube or bad calibration")
-            if shift <= p.refine_min_shift_mm and abs(dyaw) < 3.0:
+            at_hover = np.max(np.abs(np.asarray(self.motion.q_arm()) - np.asarray(plan.hover.q))) < math.radians(2.0)
+            if shift <= p.refine_min_shift_mm and abs(dyaw) < 3.0 and at_hover:
                 est = new
                 break
-            plan = self.plan_grasp(new, prefer_roll=plan.roll)
+            old_open = plan.open_deg or p.open_deg
+            plan = self.plan_grasp(cube, new, prefer_roll=plan.roll)
             total += shift
             est = new
+            if abs((plan.open_deg or p.open_deg) - old_open) > 0.5:      # the clutter check chose another opening
+                self.gripper_to(plan.open_deg, p.open_speed_deg_s)
             r = self.motion.run("arm", [plan.hover.q], p.approach_speed)
             if not r.ok:
                 raise Fail("refine", f"re-target move failed: {r.error}")
@@ -634,7 +743,7 @@ class PickPlaceNode(Node):
         return self.motion.trim_arm(q, p.trim_tol_deg, int(p.trim_max_iter), p.trim_max_bias_deg,
                                     move_s=p.trim_move_s, settle_s=p.trim_settle_s)
 
-    def clear_released(self, plan, surface, held):
+    def clear_released(self, plan, surface, held, open_deg=None):
         """After a release: get the jaw tips `retreat_clear_m` above the released cube's top. A stack
         hover can sit only ~1 cm over the release (vertical reach ends ~9 cm up), where the open jaws
         still straddle the cube; closing them there later carried the top cube off (2026-11-22). Rise
@@ -646,7 +755,7 @@ class PickPlaceNode(Node):
         h_now = float(self.model.tip(q_now)[2] - self.model.table_z)
         if h_now >= goal_h:
             return
-        grip = math.radians(p.open_deg)
+        grip = math.radians(p.open_deg if open_deg is None else open_deg)
         xy0 = np.asarray(plan.centre_xy, float)
         u = xy0 / max(1e-9, float(np.linalg.norm(xy0)))
         for d in np.arange(0.0, p.retreat_max_back_m + 1e-6, 0.01):
@@ -851,7 +960,7 @@ class PickPlaceNode(Node):
     def back_off(self, plan, phase, why):
         """Open slowly and rise to the hover (after a miss at the bottom)."""
         self.feedback(phase, f"{why}: opening and backing up")
-        self.gripper_to(self.p.open_deg, self.p.open_speed_deg_s)
+        self.gripper_to(plan.open_deg or self.p.open_deg, self.p.open_speed_deg_s)
         self.hook.restore()
         self.continuous(plan.retreat_poses(), self.p.lift_speed, bias=self.arm_bias)   # tilted: along the line, then up
 
@@ -883,21 +992,24 @@ class PickPlaceNode(Node):
             plan = None
             for attempt in range(int(p.grasp_retries) + 1):
                 phase = self.enter("approach")
-                plan = self.plan_grasp(est, prefer_roll=None if plan is None else plan.roll)
-                self.feedback("approach", plan.summary())
+                plan = self.plan_grasp(cube, est, prefer_roll=None if plan is None else plan.roll)
+                open_deg = plan.open_deg
+                self.feedback("approach", plan.summary() + (
+                    f"; clutter: jaws {open_deg:.1f} deg, hand {plan.clutter_m * 1000:.0f} mm from {plan.clutter_with}"
+                    if plan.clutter_with else ""))
                 grip_now = math.degrees(self.motion.grip())
-                if abs(grip_now - p.open_deg) > 2:
+                if abs(grip_now - open_deg) > 2:
                     q_now = self.motion.q_arm()
-                    if self.model.lowest(q_now, math.radians(p.open_deg))[1] < 0.02:
+                    if self.model.lowest(q_now, math.radians(open_deg))[1] < 0.02:
                         raise Fail("approach", "too low to open the jaws here")
                     if p.open_during_approach:
                         # the jaws open on the way; the path is checked for closed, half-open and open jaws
-                        self.transit(plan.hover.q, p.open_deg, "approach", grip_from_deg=grip_now)
+                        self.transit(plan.hover.q, open_deg, "approach", grip_from_deg=grip_now)
                     else:
-                        self.gripper_to(p.open_deg, p.open_speed_deg_s)
-                        self.transit(plan.hover.q, p.open_deg, "approach")
+                        self.gripper_to(open_deg, p.open_speed_deg_s)
+                        self.transit(plan.hover.q, open_deg, "approach")
                 else:
-                    self.transit(plan.hover.q, p.open_deg, "approach")
+                    self.transit(plan.hover.q, open_deg, "approach")
                 phase = self.enter("refine")
                 est, plan, shift = self.refine(cube, est, plan)
                 res.refine_shift_mm = float(shift)
@@ -920,7 +1032,7 @@ class PickPlaceNode(Node):
                 self.feedback("descend", why)
                 if not ok:
                     raise Fail("grasp", f"{why}: not grasping")
-                self.descend(plan, p.open_deg)
+                self.descend(plan, plan.open_deg)
                 phase = self.enter("grasp")
                 state, hold, ev, why = self.soft_close()
                 if ev is not None:
@@ -1033,8 +1145,14 @@ class PickPlaceNode(Node):
                 yaws = self.planner.close_options(math.radians(req.yaw_deg))
             release_h = surface + held["grasp_h"] + p.release_gap
             hover_h = release_h + (p.hover_height - p.grasp_tip_height)
+            # the other cubes (not the held one, not the one to stack on, not the ones under it)
+            skip = {held["cube"]} | ({cube_key(on)} if on else set())
 
             def plan_at(xy, yaws_):
+                obstacles = self.neighbours(skip, xy, surface)
+                acc = (self.clutter_accept(obstacles, [grip], release_deg=self.openings(obstacles))
+                       if obstacles else None)
+                where = f"({xy[0] * 100:.1f}, {xy[1] * 100:.1f}) cm"
                 if held.get("lean") is not None:
                     # HOOK(tilt): same lean and roll as at the grasp, so the cube stays flat; its yaw
                     # follows from the pan (no closing-direction choice)
@@ -1042,21 +1160,37 @@ class PickPlaceNode(Node):
                         xy, surface + self.edge / 2 + p.release_gap, held["cube_in_hand"], held["lean"], held["roll"],
                         math.radians(grip), p.hover_height - p.grasp_tip_height, p.descend_step, edge=self.edge)
                     if pl is None:
-                        raise Fail("carry", f"no place pose at ({xy[0] * 100:.1f}, {xy[1] * 100:.1f}) cm for a cube "
+                        raise Fail("carry", f"no place pose at {where} for a cube "
                                             f"held at {math.degrees(held['lean']):+.0f} deg lean: {why}")
+                    if acc is not None and not acc(pl)[0]:
+                        raise Fail("carry", self.clutter_refusal(f"no clear place at {where}", xy, [acc]))
+                    pl.release_deg = pl.release_deg or p.open_deg
                     return pl
                 heights = list(np.arange(hover_h, release_h + (p.stack_min_rise_m if on else 0.03) - 1e-4, -0.005))
-                pl, reasons = self.planner.plan_vertical(xy, yaws_ if yaws_ is not None else [None], math.radians(grip),
-                                                         heights, release_h, p.descend_step, 0.5,
-                                                         prefer_roll=self.motion.q_arm()[4])
-                if pl is None and p.allow_tilt:
-                    pl, more = self.planner.plan_vertical(xy, yaws_ if yaws_ is not None else [None], math.radians(grip),
-                                                          heights, release_h, p.descend_step, 0.5,
-                                                          prefer_roll=self.motion.q_arm()[4], tilted=True)
-                    reasons += more
+                options = [yaws_ if yaws_ is not None else [None]]
+                if yaws_ is None and acc is not None:
+                    # free yaw: if the roll-free solution meets a neighbour, try other closing directions
+                    pan = math.atan2(xy[1], xy[0])
+                    options.append([pan + math.radians(15.0 * k) for k in range(6)])
+                pl, reasons = None, []
+                for ys in options:
+                    for tilted in ((False, True) if p.allow_tilt else (False,)):
+                        pl, more = self.planner.plan_vertical(xy, ys, math.radians(grip), heights, release_h,
+                                                              p.descend_step, 0.5, prefer_roll=self.motion.q_arm()[4],
+                                                              tilted=tilted, accept=acc)
+                        reasons += more
+                        if pl is not None:
+                            break
+                    if pl is not None or acc is None or acc.stats["rejected"] == 0:
+                        break
                 if pl is None:
-                    raise Fail("carry", f"no place pose at ({xy[0] * 100:.1f}, {xy[1] * 100:.1f}) cm: "
-                                        + " | ".join(reasons[:3]))
+                    why = self.clutter_refusal(f"no clear place at {where}", xy, [acc]) if acc is not None else ""
+                    raise Fail("carry", why or f"no place pose at {where}: " + " | ".join(reasons[:3]))
+                pl.release_deg = pl.release_deg or p.open_deg
+                if obstacles:
+                    self.get_logger().info(f"clutter: {len(obstacles)} cube(s) near the place {where}: closing along "
+                                           f"{math.degrees(pl.close_yaw):+.0f} deg, release opening {pl.release_deg:.1f} "
+                                           f"deg, hand {pl.clutter_m * 1000:.0f} mm from {pl.clutter_with or '-'}")
                 return pl
             phase = self.enter("carry")
             plan = plan_at(target, yaws)
@@ -1064,7 +1198,7 @@ class PickPlaceNode(Node):
             self.transit(plan.hover.q, grip, "carry", load_below=held["grasp_h"])
             if on:
                 phase = self.enter("refine")
-                new = self.wait_stable(on, time.monotonic() + p.obs_settle_s, p.refine_timeout_s + p.obs_settle_s)
+                new, why = self.close_up(cube_key(on), time.monotonic() + p.obs_settle_s)
                 if new is not None:
                     shift = float(np.linalg.norm(new.centre[:2] - target) * 1000)
                     self.feedback("refine", f"{cube_key(on)} close-up shift {shift:.1f} mm")
@@ -1077,12 +1211,12 @@ class PickPlaceNode(Node):
                         if not r.ok:
                             raise Fail("refine", r.error)
                 else:
-                    self.feedback("refine", "lower cube not seen from the hover: using the remembered pose")
+                    self.feedback("refine", f"lower cube: no stable close-up ({why}): using the remembered pose")
             phase = self.enter("descend")
             i = self.descend(plan, grip, stop_on_contact_ok=True)
             phase = self.enter("release")
-            self.feedback("release", "opening slowly")
-            self.gripper_to(p.open_deg, p.open_speed_deg_s)
+            self.feedback("release", f"opening slowly to {plan.release_deg:.1f} deg")
+            self.gripper_to(plan.release_deg, p.open_speed_deg_s)
             self.hook.restore()
             q_rel = plan.descent[i].q
             tip = self.model.tip(q_rel)
@@ -1101,7 +1235,7 @@ class PickPlaceNode(Node):
             r = self.continuous(plan.retreat_poses(i), p.lift_speed, bias=self.arm_bias)
             if not r.ok:
                 raise Fail("retreat", r.error)
-            self.clear_released(plan, surface, held)
+            self.clear_released(plan, surface, held, plan.release_deg)
             res.success = True
             res.message = (f"placed {held['cube']} at ({centre[0] * 100:.1f}, {centre[1] * 100:.1f}) cm"
                            + (f" on {cube_key(on)}" if on else ""))
