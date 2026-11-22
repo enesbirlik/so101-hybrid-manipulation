@@ -77,10 +77,10 @@ cube_pick_place:
     release_gap: 0.002  # release this much above the surface (contact stops earlier)
     stack_max_age_s: 60.0  # the cube to stack on must have been seen this recently
     # motion / safety
-    transit_speed: 0.6  # rad/s, transit
-    approach_speed: 0.3  # rad/s, re-targeting at the hover
-    descend_speed: 0.12  # rad/s, descent steps
-    lift_speed: 0.2  # rad/s, lift / retreat
+    transit_speed: 0.9  # rad/s, transit
+    approach_speed: 0.45  # rad/s, re-targeting at the hover
+    descend_speed: 0.2  # rad/s, descent steps
+    lift_speed: 0.3  # rad/s, lift / retreat
     min_move_s: 0.8  # shortest move
     settle_s: 0.3  # pause after each move
     transit_clearance_mm: 45.0  # lowest point (arm, camera, carried cube) above the table on transits; cubes are 30 mm tall
