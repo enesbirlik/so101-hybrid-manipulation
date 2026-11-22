@@ -540,7 +540,15 @@ class PickPlaceNode(Node):
             self.check_preconditions()
             cube = cube_key(gh.request.cube_id)
             if self.holding is not None:
-                raise Fail("setup", f"already holding {self.holding['cube']}: place it first")
+                # the record may be stale: someone took the cube out of the jaws by hand
+                g = self.grip_measured_deg()
+                state, why = sg.grip_state(g, self.holding["hold_deg"], self.sg,
+                                           self.motion.gripper_current_ma(self.p.current_window_s))
+                if state != sg.EMPTY:
+                    raise Fail("setup", f"already holding {self.holding['cube']}: place it first ({why})")
+                self.feedback("setup", f"{self.holding['cube']} is no longer between the jaws ({why})")
+                self.holding = None
+                self.hook.restore()
             p = self.p
             phase = "search"
             est = self.search(cube)
