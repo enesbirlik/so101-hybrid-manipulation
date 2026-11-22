@@ -4,10 +4,11 @@
   <!-- Servo position loop gains per joint (P, D, I: integers 0..254), for tuning joints separately. A joint or
        gain left out gets the hardware-level <param> if any, else the built-in 16 / 32 / 0 (so101_hardware/README.md).
        Example: dict(shoulder_pan=dict(p=32), shoulder_lift=dict(p=32, d=40)) (no { } inside ${ }). Only used with the real hardware. -->
-  <!-- 2026-11-22: P 32 on the joints that carry the arm against gravity. At 16 they stick-slipped in slow moves
+  <!-- 2026-11-22: P 32 on elbow_flex and wrist_flex, 24 on shoulder_lift (32 hunted +-0.5 deg in the unloaded,
+       folded-back overview pose, which blinded the cube detector's motion gate). Higher P on the joints that carry the arm against gravity. At 16 they stick-slipped in slow moves
        (jitter in the descent) and stayed 2-3 deg short under load; shoulder_pan stays at 16 (higher P grew its
        4-5 Hz ripple, 2026-11-21 sweep). -->
-  <xacro:property name="joint_gains" value="${dict(shoulder_lift=dict(p=32), elbow_flex=dict(p=32), wrist_flex=dict(p=32))}"/>
+  <xacro:property name="joint_gains" value="${dict(shoulder_lift=dict(p=24), elbow_flex=dict(p=32), wrist_flex=dict(p=32))}"/>
   <!-- Servo torque limit per joint, 0.1 % units (integer 0..1000), written on activation; also the ceiling for the
        runtime gripper/torque_limit command. A joint left out gets the hardware-level <param> if any, else 1000.
        Example: dict(gripper=500). Only used with the real hardware. -->
