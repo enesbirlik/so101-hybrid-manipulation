@@ -9,9 +9,9 @@
 ![Ubuntu 24.04](https://img.shields.io/badge/Ubuntu-24.04-E95420)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-<!-- TODO: hero image/GIF (< 5 MB) at docs/media/hero.gif, then replace this block with:
-     ![SO-101 arm](docs/media/hero.gif) -->
-> 📷 *Hero image coming soon: the assembled arm in action.*
+<p align="center">
+  <img src="docs/media/2026-11-21-build-log-3.jpg" alt="SO-101 arm executing a MoveIt 2 plan on the real hardware" width="480">
+</p>
 
 This is a long-running, open build log of an SO-101 arm built from scratch: hardware, ROS 2 integration, perception, and learning. Progress is tracked in [`roadmap.json`](roadmap.json) and documented step by step in the [devlog](docs/devlog/).
 
@@ -29,7 +29,7 @@ Hypotheses, metrics, and the planned experiment protocol: [docs/research/experim
 |---|---|---|
 | Arm | SO-101 (TheRobotStudio), 3D-printed parts | 1 |
 | Servos | Feetech ST3215, 12 V serial bus servo: 5 DOF + gripper | 6 |
-| Servo driver | Waveshare bus servo driver board (USB) | 1 |
+| Servo driver | Waveshare ESP32-based bus servo driver board (USB serial). The first, non-ESP32 Waveshare board burned out | 1 |
 | Power supply | 12 V 10 A constant-voltage PSU | 1 |
 | Camera | USB camera, 32×32 mm module, 135° wide-angle (fisheye) lens, wrist/gripper-mounted | 1 |
 | Leader arm | None. Kinesthetic teaching (gravity compensation in PWM mode) is planned instead | — |
@@ -43,8 +43,8 @@ Single source of truth: [`roadmap.json`](roadmap.json).
 | 1 | Parts, BOM & 3D prints | ✅ done |
 | 2 | Assembly & first motor test | ✅ done (2026-10-25) |
 | 3 | Calibration, URDF matching, fisheye camera calibration | ✅ done (2026-11-01) |
-| 4 | C++ `ros2_control` interface + MoveIt 2 | 🚧 active |
-| 5 | Perception: ArUco + object detection → classical pick & place | ⬜ todo |
+| 4 | C++ `ros2_control` interface + MoveIt 2 | ✅ done |
+| 5 | Perception: ArUco + object detection → classical pick & place | 🚧 active (ArUco cube detector in place) |
 | 6 | Behavior Tree + demonstration data + VLA policy | ⬜ todo |
 | 7 | Hybrid orchestration & benchmark | ⬜ todo |
 
@@ -80,14 +80,14 @@ ros2 launch so101_description display.launch.py
 | Path | Role | Status |
 |---|---|---|
 | [`so101_description/`](so101_description/) | URDF/xacro, meshes, RViz display launch | ✅ package |
-| [`so101_hardware/`](so101_hardware/) | C++ `ros2_control` hardware interface for the ST3215 bus | placeholder (phase 4) |
-| [`so101_bringup/`](so101_bringup/) | Launch files and controller configs for the real robot | placeholder (phase 4) |
-| [`so101_moveit_config/`](so101_moveit_config/) | MoveIt 2 configuration | placeholder (phase 4) |
-| [`so101_perception/`](so101_perception/) | Camera calibration, ArUco, object detection | placeholder (phases 3, 5) |
+| [`so101_hardware/`](so101_hardware/) | C++ `ros2_control` hardware interface for the ST3215 bus | ✅ package (runs the arm under MoveIt) |
+| [`so101_bringup/`](so101_bringup/) | Joint calibration, controller config, control launch (mock or real hardware) | ✅ package |
+| [`so101_moveit_config/`](so101_moveit_config/) | MoveIt 2 configuration (pick_ik, OMPL, Pilz), demo launch | ✅ package |
+| [`so101_perception/`](so101_perception/) | Wrist camera publisher, fisheye + hand-eye calibration, ArUco cube detector (cube poses in `base_link`) | ✅ package (camera, cubes) |
 | [`so101_bt/`](so101_bt/) | Behavior Tree orchestration and handover logic | placeholder (phases 6, 7) |
 | [`so101_policy/`](so101_policy/) | Demonstration data and VLA policy inference | placeholder (phase 6) |
+| [`so101_dashboard/`](so101_dashboard/) | Local robot monitor (raylib + Dear ImGui): 3D view, tasks, wrist camera, joint telemetry | ✅ package |
 | [`tools/`](tools/) | Standalone helper scripts: Feetech bus driver, joint calibration, live joint states, teleop, camera calibration | active |
-| [`web/`](web/) | three.js URDF viewer for the portfolio | README |
 | [`docs/devlog/`](docs/devlog/) | Dated build log entries | active |
 | [`docs/research/`](docs/research/) | Hypotheses, metrics, experiment protocol | draft |
 | [`docs/media/`](docs/media/) | Small images and GIFs only | — |
@@ -99,6 +99,9 @@ ros2 launch so101_description display.launch.py
 - [Day 2 — Fisheye calibration of the wrist camera](docs/devlog/2026-10-28-day-2.md) (2026-10-28)
 - [Day 3 — Hand-eye calibration, and a 10° shoulder error it uncovered](docs/devlog/2026-10-28-day-3.md) (2026-10-28)
 - [Day 4 — Kinematic calibration, and the play that fooled every contact test](docs/devlog/2026-11-01-day-4.md) (2026-10-29, 2026-11-01)
+- [Day 5 — ros2_control and MoveIt 2 on the real arm](docs/devlog/2026-11-06-day-5.md) (2026-11-01, 2026-11-06)
+- [Day 6 — Shoulder zero, ruler and the pan shake](docs/devlog/2026-11-14-day-6.md) (2026-11-14)
+- [Day 7 — Gains, a gripper that could not close, and a first grasp attempt](docs/devlog/2026-11-21-day-7.md) (2026-11-21)
 
 New entries follow [`docs/devlog/template.md`](docs/devlog/template.md). Videos are linked from the entries, not stored in the repo.
 

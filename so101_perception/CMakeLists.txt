@@ -1,0 +1,22 @@
+cmake_minimum_required(VERSION 3.8)
+project(so101_perception)
+
+find_package(ament_cmake REQUIRED)
+
+install(DIRECTORY config launch
+  DESTINATION share/${PROJECT_NAME}
+)
+install(PROGRAMS scripts/wrist_camera_node.py scripts/cube_detector_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+# imported by cube_detector_node.py from its own directory
+install(FILES scripts/cube_detection.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(test_cube_detection test/test_cube_detection.py)
+endif()
+
+ament_package()

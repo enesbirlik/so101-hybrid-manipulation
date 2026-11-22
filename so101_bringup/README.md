@@ -1,12 +1,80 @@
 # so101_bringup
 
-> **Planned: phase 4** (C++ `ros2_control` interface + MoveIt 2). Not a ROS package yet.
+Launch files and configuration that start the SO-101: `robot_state_publisher`, the `controller_manager` with mock hardware or the real servo bus, and the controllers.
 
-Launch files and configuration that start the real robot (or a mock system).
+```bash
+ros2 launch so101_bringup so101_control.launch.py                          # mock hardware (default)
+ros2 launch so101_bringup so101_control.launch.py use_mock_hardware:=false  # the servo bus (so101_hardware)
+```
 
-Planned contents:
+| Path | Content |
+|---|---|
+| `config/so101_calibration.yaml` | Joint calibration: homing offsets, ranges, zero ticks, directions (`tools/so101_calibrate.py`) |
+| `config/ros2_controllers.yaml` | `joint_state_broadcaster`, `arm_controller` (5 joints) and `gripper_controller` (`JointTrajectoryController`s, position command, 100 Hz), and `torque_controller` (the torque switch, see `so101_hardware`) |
+| `launch/so101_control.launch.py` | `robot_state_publisher` + `ros2_control_node` + controller spawners |
+| `scripts/so101_ready.py` | Takes the arm out of the folded rest (elbow first) so MoveIt can plan |
+| `scripts/so101_lift.py` | Lifts the hand straight up (`--dz` cm, default 4), keeping the gripper orientation, without MoveIt |
+| `scripts/so101_teach_check.py` | Kinesthetic teaching check: taught (torque off) vs held and replayed (torque on) poses |
 
-- A launch file that starts `robot_state_publisher`, `controller_manager` with `so101_hardware`, and the controllers.
-- Controller configuration (`joint_state_broadcaster`, an arm trajectory controller, a gripper controller).
-- A `use_mock_hardware` switch (ros2_control mock components) for development without the arm.
-- Later: camera driver launch and a single "full system" launch for experiments.
+## Teaching by hand
+
+The encoders read the same with the torque on or off, so one joint calibration serves both. A taught pose can still come back differently, for two mechanical reasons:
+- under load the servo stops short of its goal (P gain, deadband);
+- play the encoders do not see.
+
+`so101_teach_check.py` measures the first; for the second, measure the tool with a ruler (`--pause`). Results are saved in `~/so101_data/teach_check/`.
+
+```bash
+S=install/so101_bringup/lib/so101_bringup/so101_teach_check.py
+$S sag                                   # hold a pose, torque on, let go: how far each joint moves
+$S record                                # torque off, Enter saves each pose
+$S replay ~/so101_data/teach_check/<time>-poses.yaml --rounds 3 --pause
+```
+
+## Hand on the table
+
+A hand resting on the table is, in the model, a few millimetres to over 2 cm inside it: the joint play takes up downwards and the encoders do not see it (devlog day 4; with the torque off, 22 mm measured on 2026-11-08). MoveIt refuses to plan from a start state in collision. `so101_lift.py` moves the tool point straight up first, with forward kinematics from `/robot_description` and a joint trajectory for `arm_controller`; only `shoulder_lift`, `elbow_flex` and `wrist_flex` move:
+
+```bash
+install/so101_bringup/lib/so101_bringup/so101_lift.py            # 4 cm
+install/so101_bringup/lib/so101_bringup/so101_lift.py --dz 6 --dry-run
+```
+
+## Leaving the folded rest
+
+MoveIt cannot plan from the folded rest, and rejects it as a start state:
+- `shoulder_lift` lies past the planning limit;
+- `elbow_flex` sits on its stop, where the forearm touches the shoulder in the model;
+- the hand often rests on the table.
+
+Once the control stack runs, take the arm out first:
+
+```bash
+install/so101_bringup/lib/so101_bringup/so101_ready.py          # elbow to 80 deg, lift into its range
+install/so101_bringup/lib/so101_bringup/so101_ready.py --zero   # then elbow to 0, then the arm to 0
+```
+
+(`ros2 run so101_bringup so101_ready.py` works too, with `ros-jazzy-ros2run` installed.)
+
+These are straight joint moves for `arm_controller`, in the order of `tools/so101_calibrate.py zero`: the elbow first, so the hand rises away from the table. The joint that moves furthest goes at 0.4 rad/s, and each move takes at least 2 s.
+
+Tested on mock hardware from the real rest pose (lift −101.4°, elbow 91°, wrist_flex 43°). The start state was invalid before the script and valid after it.
+
+## Robot description
+
+The robot description is `so101_description/urdf/so101.urdf.xacro` with `ros2_control:=true`. With `use_mock_hardware:=true` the joints are `mock_components/GenericSystem`, which mirrors each command to the state, starting at zero.
+
+With `use_mock_hardware:=false` they are `so101_hardware/SO101Hardware` on the servo bus.
+
+Planned: a single "full system" launch for the experiments (control, camera, perception, Behavior Tree). For now `so101_moveit_config`'s `demo.launch.py camera:=true` starts control, camera and MoveIt together.
+
+## Consistency test
+
+`test/test_calibration_consistency.py` checks that the calibration, URDF, MoveIt limits, SRDF poses, controller list and `so101_kinematics.yaml` agree. The main point: `so101_hardware` clamps commands to the calibrated servo range, so a limit wider than that range would be clipped without a warning. It reads the source files only (no ROS, no hardware).
+
+```bash
+colcon test --packages-select so101_bringup && colcon test-result --verbose   # from ~/so101_ws
+python3 -m pytest so101_bringup/test -v                                       # from the repo root
+```
+
+`elbow_flex` upper is a known, strict xfail (the folded-rest exception in `joint_limits.yaml`). If it ever passes, the test fails so the marker gets removed.

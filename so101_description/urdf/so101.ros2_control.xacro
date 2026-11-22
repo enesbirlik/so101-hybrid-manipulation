@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<!-- ros2_control interfaces of the six joints: position command; position, velocity and servo telemetry state. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- Servo position loop gains per joint (P, D, I: integers 0..254), for tuning joints separately. A joint or
+       gain left out gets the hardware-level <param> if any, else the built-in 16 / 32 / 0 (so101_hardware/README.md).
+       Example: dict(shoulder_pan=dict(p=32), shoulder_lift=dict(p=32, d=40)) (no { } inside ${ }). Only used with the real hardware. -->
+  <xacro:property name="joint_gains" value="${dict()}"/>
+  <xacro:macro name="so101_ros2_control" params="name use_mock_hardware">
+    <ros2_control name="${name}" type="system">
+      <hardware>
+        <xacro:if value="${use_mock_hardware}">
+          <plugin>mock_components/GenericSystem</plugin>
+        </xacro:if>
+        <xacro:unless value="${use_mock_hardware}">
+          <!-- the ST3215 bus; parameters and defaults in so101_hardware/README.md -->
+          <plugin>so101_hardware/SO101Hardware</plugin>
+        </xacro:unless>
+      </hardware>
+      <xacro:macro name="so101_joint" params="joint p_coefficient:='' d_coefficient:='' i_coefficient:=''">
+        <!-- explicit macro arguments win over the joint_gains table -->
+        <xacro:property name="gains" value="${joint_gains.get(joint, dict())}"/>
+        <xacro:property name="p" value="${p_coefficient if p_coefficient != '' else gains.get('p', '')}"/>
+        <xacro:property name="d" value="${d_coefficient if d_coefficient != '' else gains.get('d', '')}"/>
+        <xacro:property name="i" value="${i_coefficient if i_coefficient != '' else gains.get('i', '')}"/>
+        <joint name="${joint}">
+          <xacro:if value="${p != ''}"><param name="p_coefficient">${p}</param></xacro:if>
+          <xacro:if value="${d != ''}"><param name="d_coefficient">${d}</param></xacro:if>
+          <xacro:if value="${i != ''}"><param name="i_coefficient">${i}</param></xacro:if>
+          <command_interface name="position"/>
+          <state_interface name="position">
+            <param name="initial_value">0.0</param>
+          </state_interface>
+          <state_interface name="velocity"/>
+          <!-- servo telemetry: load % (signed like the joint), current A, temperature deg C, voltage V -->
+          <state_interface name="load"/>
+          <state_interface name="current"/>
+          <state_interface name="temperature"/>
+          <state_interface name="voltage"/>
+        </joint>
+      </xacro:macro>
+      <xacro:so101_joint joint="shoulder_pan"/>
+      <xacro:so101_joint joint="shoulder_lift"/>
+      <xacro:so101_joint joint="elbow_flex"/>
+      <xacro:so101_joint joint="wrist_flex"/>
+      <xacro:so101_joint joint="wrist_roll"/>
+      <xacro:so101_joint joint="gripper"/>
+      <!-- all servos' torque: 1 = on, 0 = off (the arm hangs free, e.g. to teach it by hand) -->
+      <gpio name="torque">
+        <command_interface name="enable"/>
+        <state_interface name="enable">
+          <param name="initial_value">1.0</param>
+        </state_interface>
+      </gpio>
+    </ros2_control>
+  </xacro:macro>
+</robot>

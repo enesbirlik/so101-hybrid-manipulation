@@ -198,16 +198,19 @@ def write_eeprom(bus, servo_id, offset, lo, hi):
 
 def cmd_scan(args):
     with open_bus(args) as bus:
-        print(f"{'joint':<14}{'id':>3}{'pos':>7}{'offset':>8}{'min':>6}{'max':>6}{'mode':>6}{'torque':>8}{'V':>7}{'C':>5}")
+        print(f"{'joint':<14}{'id':>3}{'pos':>7}{'offset':>8}{'min':>6}{'max':>6}{'mode':>6}{'torque':>8}{'V':>7}{'C':>5}"
+              f"{'P/D/I':>11}{'dead':>6}")
         for j in JOINTS:
             if not bus.ping(j.id):
                 print(f"{j.name:<14}{j.id:>3}  no reply")
                 continue
             pos, _, _, volt, temp = bus.read_state(j.id)
+            gains = "/".join(str(bus.read_u8(j.id, a)) for a in (fb.P_COEFFICIENT, fb.D_COEFFICIENT, fb.I_COEFFICIENT))
+            dead = f"{bus.read_u8(j.id, fb.CW_DEAD_ZONE)}/{bus.read_u8(j.id, fb.CCW_DEAD_ZONE)}"
             print(f"{j.name:<14}{j.id:>3}{pos:>7}{bus.read_homing_offset(j.id):>8}"
                   f"{bus.read_u16(j.id, fb.MIN_POSITION_LIMIT):>6}{bus.read_u16(j.id, fb.MAX_POSITION_LIMIT):>6}"
                   f"{bus.read_u8(j.id, fb.OPERATING_MODE):>6}{bus.read_u8(j.id, fb.TORQUE_ENABLE):>8}"
-                  f"{volt:>7.1f}{temp:>5}")
+                  f"{volt:>7.1f}{temp:>5}{gains:>11}{dead:>6}")
 
 
 def cmd_live(args):
@@ -351,7 +354,9 @@ def write_joint(bus, j, plan, cal):
            bus.read_u16(j.id, fb.MAX_POSITION_LIMIT))
     expected = (bus.read_position(j.id) + shift) % fb.TICKS_PER_TURN
     if hi - lo > 2 * margin:
-        write_eeprom(bus, j.id, offset, lo + margin, hi - margin)
+        # the gripper keeps its closed end: with the margin the servo stopped ~1.5 deg before the
+        # jaws met (jaw tips ~2 mm apart, nothing thin could be held)
+        write_eeprom(bus, j.id, offset, lo if j.name == "gripper" else lo + margin, hi - margin)
     else:
         write_eeprom(bus, j.id, offset, 0, fb.TICKS_PER_TURN - 1)
     if abs(wrap(bus.read_position(j.id) - expected)) > 30:

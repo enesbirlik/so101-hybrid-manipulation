@@ -30,12 +30,22 @@ check_urdf /tmp/so101.urdf
 | `use_wrist_camera` | `true` | Adds the wrist camera mount and `wrist_camera_link` to the gripper |
 | `gui` | `true` | Starts `joint_state_publisher_gui` (sliders) |
 
+The xacro also takes:
+
+| Xacro argument | Default | Description |
+|---|---|---|
+| `table` | `true` | A `table` link fixed to `base_link`, top at `table_z` from the kinematics file, as a collision object for planning |
+| `ros2_control` | `false` | Adds the `<ros2_control>` block (`urdf/so101.ros2_control.xacro`); `so101_bringup` sets it |
+| `use_mock_hardware` | `true` | With `ros2_control`: `mock_components/GenericSystem` instead of `so101_hardware/SO101Hardware` |
+| `kinematics` | `config/so101_kinematics.yaml` | The joint origin calibration to load |
+
 ## Files
 
 | Path | Content |
 |---|---|
 | `urdf/so101_new_calib.urdf` | Vendored upstream URDF (mesh paths changed to `package://`, three joint origins from the kinematics file) |
-| `urdf/so101.urdf.xacro` | Entry point: loads the kinematics file, includes the arm, optionally the camera |
+| `urdf/so101.urdf.xacro` | Entry point: loads the kinematics file, includes the arm, optionally the camera, the table and `ros2_control` |
+| `urdf/so101.ros2_control.xacro` | `ros2_control` interfaces of the six joints: position command, position and velocity state |
 | `config/so101_kinematics.yaml` | Calibrated `shoulder_lift`, `elbow_flex`, `wrist_flex` origins (upstream values as `cad`), see [tools](../tools/README.md#kinematic-calibration) |
 | `urdf/wrist_camera.xacro` | Wrist camera mount + camera links (from upstream `so101_new_calib_camera.urdf`) |
 | `meshes/` | STL meshes referenced by the URDF |
@@ -61,15 +71,13 @@ Fixed frames: `gripper_frame_link` (tool point on `gripper_link`), plus `wrist_c
 
 **Zero convention ("new calibration"):** each joint's zero is the **middle of its range**, matching current LeRobot calibration. (The older "old calibration" convention put zero at the fully extended horizontal pose.)
 
-## TODO: verify against real hardware
+## Matched to the real arm
 
-The model has **not yet been matched to the physical arm**. Until every item below is checked, treat the joint values as nominal.
+Checked in phase 3 (devlog days 1–4):
 
-- [ ] **Direction:** for each joint, a positive command in RViz turns the real joint the same way.
-- [ ] **Zero offset:** URDF zero (mid-range) matches the servo position after calibration; record the per-joint offset in servo ticks.
-- [ ] **Ticks ↔ radians:** confirm 4096 ticks = 2π for every ST3215 and note the sign per joint.
-- [ ] **Limits:** the real mechanical range of each joint fits inside the URDF limits (watch for cable and printed-part collisions).
-- [ ] **Gripper mapping:** relation between gripper joint angle and LeRobot's 0 (closed) … 100 (open) linear range.
-- [ ] **Camera pose:** `wrist_camera_link` position and orientation match the real mount. (The camera mesh has no `scale` attribute, but it is already in metres: 32 × 32 × 33 mm.)
-- [ ] **Camera frame:** add a `wrist_camera_optical_frame` (REP 103 optical convention) once fisheye intrinsics for the 135° lens are calibrated (phase 3).
-- [ ] **Effort/velocity:** replace the placeholder limits with values derived from the ST3215 datasheet and measurements.
+- [x] **Direction, zero, ticks ↔ radians:** per-joint direction, zero tick and 4096 ticks = 2π in `so101_bringup/config/so101_calibration.yaml` (`tools/so101_calibrate.py`).
+- [x] **Limits:** the calibrated ranges are measured on the stops. MoveIt cuts its limits to them (`so101_moveit_config/config/joint_limits.yaml`); the URDF keeps the upstream values.
+- [x] **Gripper:** a joint in radians like the others, from the same calibration. LeRobot's 0–100 range is not used.
+- [x] **Joint origins:** `shoulder_lift`, `elbow_flex`, `wrist_flex` fitted to hand-eye data (`config/so101_kinematics.yaml`). The table height `table_z` is the bottom of the base meshes (−2.4 mm), fitted from ruler gaps on 2026-11-14 together with a `shoulder_lift` zero correction. The origins were fitted with the old zero and are due for a refit.
+- [x] **Camera:** the solved hand-eye transform `gripper_link` → `wrist_camera_optical_frame` is published by `so101_perception`. The mount and `wrist_camera_link` in the URDF stay CAD-only, for display and collision.
+- [ ] **Effort/velocity:** still the upstream placeholders. Planning speed comes from MoveIt's `joint_limits.yaml` (3 rad/s, 8 rad/s²).
