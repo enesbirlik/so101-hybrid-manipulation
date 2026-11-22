@@ -1,7 +1,9 @@
 #include "ros_link.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
+#include <cstdlib>
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -14,6 +16,63 @@ double now_s()
   static const auto start = std::chrono::steady_clock::now();
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
+
+int cube_index(const std::string & id)
+{
+  std::string s = id;
+  if (s.rfind("cube_", 0) == 0) {
+    s = s.substr(5);
+  } else if (!s.empty() && (s[0] == 'K' || s[0] == 'k')) {
+    s = s.substr(1);
+  }
+  if (s.empty() || s.size() > 3 || !std::all_of(s.begin(), s.end(), ::isdigit)) {
+    return -1;
+  }
+  return std::stoi(s);
+}
+
+namespace
+{
+
+// The raw value of `"key":` in a flat or nested JSON text: a string without its quotes, an object
+// with its braces, or a literal (true, null, 3). Empty when the key is missing. Enough for the pick
+// node's small state message; not a JSON parser.
+std::string json_value(const std::string & text, const std::string & key, bool * is_string = nullptr)
+{
+  const size_t k = text.find("\"" + key + "\"");
+  if (k == std::string::npos) {
+    return "";
+  }
+  size_t i = text.find(':', k + key.size() + 2);
+  if (i == std::string::npos) {
+    return "";
+  }
+  i = text.find_first_not_of(" \t\r\n", i + 1);
+  if (i == std::string::npos) {
+    return "";
+  }
+  if (is_string) {
+    *is_string = text[i] == '"';
+  }
+  if (text[i] == '"') {
+    const size_t end = text.find('"', i + 1);
+    return end == std::string::npos ? "" : text.substr(i + 1, end - i - 1);
+  }
+  if (text[i] == '{') {
+    int depth = 0;
+    for (size_t j = i; j < text.size(); ++j) {
+      depth += text[j] == '{' ? 1 : text[j] == '}' ? -1 : 0;
+      if (depth == 0) {
+        return text.substr(i, j - i + 1);
+      }
+    }
+    return "";
+  }
+  const size_t end = text.find_first_of(",}] \t\r\n", i);
+  return text.substr(i, end == std::string::npos ? std::string::npos : end - i);
+}
+
+}  // namespace
 
 void History::push(double t, double v)
 {
@@ -110,8 +169,77 @@ RosLink::RosLink(State & state)
         cube.rgba = {m.color.r, m.color.g, m.color.b, m.color.a};
       }
     });
+  tracked_sub_ = create_subscription<vision_msgs::msg::Detection3DArray>(
+    "/cubes/tracked", 10, [this](const vision_msgs::msg::Detection3DArray & msg) {on_tracked(msg);});
+  // the pick node's state, if it publishes one (latched): idle/busy and the held cube
+  pick_state_sub_ = create_subscription<std_msgs::msg::String>(
+    "/cube_pick_place/state", rclcpp::QoS(1).transient_local().reliable(),
+    [this](const std_msgs::msg::String & msg) {on_pick_state(msg);});
+  // hidden test hook: GUI actions (clicks, buttons, screenshots) from a topic, for mock tests only
+  const char * test = std::getenv("SO101_DASHBOARD_TEST");
+  if (test && std::string(test) == "1") {
+    RCLCPP_WARN(get_logger(), "test hook on: /so101_dashboard/test drives the GUI");
+    test_sub_ = create_subscription<std_msgs::msg::String>(
+      "/so101_dashboard/test", 10, [this](const std_msgs::msg::String & msg) {
+        std::lock_guard<std::mutex> lock(state_.mutex);
+        state_.test_commands.push_back(msg.data);
+      });
+  }
   image_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   topics_timer_ = create_wall_timer(std::chrono::milliseconds(500), [this] {refresh_image_topics();});
+}
+
+void RosLink::on_tracked(const vision_msgs::msg::Detection3DArray & msg)
+{
+  // merged per cube (several publishers, e.g. two FAKE cubes, each send their own), dropped when
+  // no message mentioned it for TRACKED_TIMEOUT_S; the detector sends all of them in every message
+  constexpr double TRACKED_TIMEOUT_S = 2.0;
+  const double now = now_s();
+  std::lock_guard<std::mutex> lock(state_.mutex);
+  auto & cubes = state_.tracked;
+  for (auto it = cubes.begin(); it != cubes.end(); ) {
+    it = now - it->second.received > TRACKED_TIMEOUT_S ? cubes.erase(it) : std::next(it);
+  }
+  for (const auto & d : msg.detections) {
+    const int k = cube_index(d.id);
+    if (k < 0 || d.results.empty() || (!msg.header.frame_id.empty() && msg.header.frame_id != "base_link")) {
+      continue;
+    }
+    const auto & pose = d.results[0].pose.pose;
+    TrackedCube c;
+    c.position = {static_cast<float>(pose.position.x), static_cast<float>(pose.position.y),
+      static_cast<float>(pose.position.z)};
+    c.yaw = static_cast<float>(2.0 * std::atan2(pose.orientation.z, pose.orientation.w));
+    c.edge = d.bbox.size.x > 0 ? static_cast<float>(d.bbox.size.x) : 0.03f;
+    c.score = static_cast<float>(d.results[0].hypothesis.score);
+    c.received = now;
+    cubes[k] = c;
+  }
+}
+
+void RosLink::on_pick_state(const std_msgs::msg::String & msg)
+{
+  const std::string & text = msg.data;
+  PickNodeState s;
+  s.received = now_s();
+  const std::string busy = json_value(text, "busy");
+  const std::string status = json_value(text, "state").empty() ? json_value(text, "status") : json_value(text, "state");
+  s.busy = busy == "true" || status == "busy";
+  for (const char * key : {"held", "holding", "held_cube"}) {
+    bool is_string = false;
+    std::string v = json_value(text, key, &is_string);
+    if (!v.empty() && v.front() == '{') {
+      v = json_value(v, "cube", &is_string);
+    }
+    if (is_string && !v.empty()) {
+      const int k = cube_index(v);
+      s.held = k >= 0 ? "cube_" + std::to_string(k) : v;
+      break;
+    }
+  }
+  std::lock_guard<std::mutex> lock(state_.mutex);
+  state_.pick_node = s;
+  state_.holding = Holding{s.held, false, "pick node"};
 }
 
 void RosLink::refresh_image_topics()
@@ -123,9 +251,16 @@ void RosLink::refresh_image_topics()
       topics.push_back(name);
     }
   }
+  // the pick node's state topic went away (node stopped, or an older one started): back to the
+  // dashboard's own held-cube record, starting from the last state it published
+  const bool pick_state_published = count_publishers("/cube_pick_place/state") > 0;
   std::string wanted;
   {
     std::lock_guard<std::mutex> lock(state_.mutex);
+    if (!pick_state_published && state_.pick_node.received >= 0) {
+      state_.pick_node = PickNodeState{};
+      state_.holding.source = "last pick node state";
+    }
     state_.image_topics = topics;
     if (state_.image_topic.empty() && std::find(topics.begin(), topics.end(), preferred) != topics.end()) {
       state_.image_topic = preferred;

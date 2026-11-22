@@ -21,6 +21,9 @@
   <depend>moveit_msgs</depend>
   <depend>controller_manager_msgs</depend>
   <depend>rclcpp_action</depend>
+  <depend>vision_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>so101_manipulation_interfaces</depend>
   <depend>tinyxml2_vendor</depend>
 
   <exec_depend>so101_bringup</exec_depend>

@@ -16,6 +16,9 @@ find_package(control_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(controller_manager_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(vision_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
+find_package(so101_manipulation_interfaces REQUIRED)
 find_package(tinyxml2_vendor REQUIRED)
 find_package(TinyXML2 REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgcodecs imgproc)
@@ -63,12 +66,14 @@ add_executable(dashboard
   src/robot_view.cpp
   src/camera_view.cpp
   src/tasks.cpp
-  src/layout.cpp)
+  src/layout.cpp
+  src/pick_place_ui.cpp)
 target_link_libraries(dashboard dashboard_gui ${OpenCV_LIBS} tinyxml2::tinyxml2)
 target_compile_options(dashboard PRIVATE -Wall -Wextra)   # ours only, not the fetched libraries
 target_compile_definitions(dashboard PRIVATE NO_FONT_AWESOME)
 target_compile_definitions(dashboard_gui PRIVATE NO_FONT_AWESOME)
-ament_target_dependencies(dashboard rclcpp ament_index_cpp sensor_msgs std_msgs tf2_ros urdf visualization_msgs control_msgs moveit_msgs rclcpp_action controller_manager_msgs)
+ament_target_dependencies(dashboard rclcpp ament_index_cpp sensor_msgs std_msgs tf2_ros urdf visualization_msgs control_msgs moveit_msgs rclcpp_action controller_manager_msgs
+  vision_msgs std_srvs so101_manipulation_interfaces)
 
 install(TARGETS dashboard DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY fonts launch DESTINATION share/${PROJECT_NAME})

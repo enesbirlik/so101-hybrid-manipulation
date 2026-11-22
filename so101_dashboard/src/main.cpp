@@ -53,7 +53,9 @@ int main(int argc, char ** argv)
   std::thread ros_thread([&executor] {executor.spin();});
 
   SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
-  InitWindow(1600, 960, "SO-101 // MISSION CONTROL");
+  // SO101_DASHBOARD_TITLE: another window title, e.g. for a test instance next to the real one
+  const char * title = std::getenv("SO101_DASHBOARD_TITLE");
+  InitWindow(1600, 960, title && *title ? title : "SO-101 // MISSION CONTROL");
   SetWindowMinSize(900, 600);
   SetTargetFPS(60);
   SetExitKey(KEY_NULL);   // Esc must not close the window
@@ -77,7 +79,7 @@ int main(int argc, char ** argv)
     layout.begin_frame(STATUS_BAR_H);
     // a closed panel is not drawn at all (and a closed camera panel stops the image subscription)
     if (bool * open = layout.open(sd::WIN_VIEW); *open) {
-      view->draw(state, open);
+      view->draw(state, tasks, open);
     }
     {
       bool * open = layout.open(sd::WIN_CAMERA);
@@ -104,8 +106,16 @@ int main(int argc, char ** argv)
     sd::draw_status_bar(state, STATUS_BAR_H);
     rlImGuiEnd();
     EndDrawing();
+    std::string shot;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      shot.swap(state.screenshot);   // the test hook's named screenshot
+    }
     if (IsKeyPressed(KEY_F12) || screenshot_requested.exchange(false)) {
-      TakeScreenshot("so101_dashboard.png");
+      shot = "so101_dashboard.png";
+    }
+    if (!shot.empty()) {
+      TakeScreenshot(shot.c_str());
     }
   }
 

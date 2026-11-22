@@ -17,6 +17,7 @@
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
+#include <vision_msgs/msg/detection3_d_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -25,6 +26,9 @@ namespace so101_dashboard
 {
 
 double now_s();  // steady clock, seconds since start
+
+// "cube_3", "3", "K3" -> 3; -1 for anything else.
+int cube_index(const std::string & id);
 
 // Fixed-size ring of (t, value), for the rolling plots.
 class History
@@ -106,12 +110,54 @@ struct Ghost
   double received = -1.0;
 };
 
+// A cube from /cubes/tracked (the detector's filter, or the FAKE cube on mock), in base_link.
+struct TrackedCube
+{
+  std::array<float, 3> position{};
+  float yaw = 0.0f;       // rad, folded into [-45, 45) deg
+  float edge = 0.03f;     // m
+  float score = 0.0f;     // >= 0.5: stable
+  double received = -1.0;
+};
+
+// The pick node's own state topic (/cube_pick_place/state, transient-local JSON), when it has one.
+struct PickNodeState
+{
+  double received = -1.0;   // -1: never heard (older pick node): the dashboard keeps its own record
+  bool busy = false;
+  std::string held;         // "cube_<k>", empty when nothing is held
+};
+
+// What the dashboard believes is between the jaws: from the PickCube / PlaceCube results, or from
+// the pick node's state topic when there is one.
+struct Holding
+{
+  std::string cube;         // "cube_<k>", empty: nothing held
+  bool uncertain = false;   // e.g. a pick stopped during the lift
+  std::string source;       // "pick result", "pick node", ...
+};
+
+// Cube selection and place target of the 3D view. GUI thread only.
+struct CubeSelection
+{
+  int cube = -1;            // selected cube index, -1: none
+  int stack_on = -1;        // while holding: the cube clicked as the place target, -1: none
+  bool has_target = false;  // while holding: a table point was clicked
+  float x = 0.0f, y = 0.0f; // that point, base_link [m]
+  float yaw_deg = 0.0f;     // yaw of the placed cube
+  bool any_yaw = false;     // NaN to the action: the smallest wrist roll change
+  std::string message;      // why the last click was refused
+  double message_at = -1.0;
+};
+
 struct TaskStatus
 {
   bool running = false;
   std::string label;
-  std::string phase;     // move_group feedback ("PLANNING", "MONITOR", ...) or "running"
+  std::string phase;     // move_group feedback ("PLANNING", "MONITOR", ...), pick/place phase or "running"
+  std::string detail;    // pick/place feedback detail
   double started = 0.0;
+  std::vector<std::pair<std::string, double>> phases;   // pick/place: each phase and when it began
 };
 
 struct TaskLogEntry
@@ -121,6 +167,7 @@ struct TaskLogEntry
   std::string result;
   double duration = 0.0;
   bool ok = false;
+  std::string details;   // tooltip: the phases a pick/place went through
 };
 
 struct State
@@ -140,6 +187,12 @@ struct State
   RateMeter image_rate;
   LineMarker fov;
   std::map<int, CubeMarker> cubes;     // by cube index
+  std::map<int, TrackedCube> tracked;  // by cube index, the last /cubes/tracked
+  PickNodeState pick_node;
+  Holding holding;
+  CubeSelection selection;
+  std::deque<std::string> test_commands;   // SO101_DASHBOARD_TEST=1: from /so101_dashboard/test
+  std::string screenshot;                  // file name of a requested screenshot (test hook)
 
   TaskStatus task;
   std::deque<TaskLogEntry> task_log;   // newest first
@@ -156,6 +209,8 @@ private:
   void on_joint_states(const sensor_msgs::msg::JointState & msg);
   void on_dynamic_joint_states(const control_msgs::msg::DynamicJointState & msg);
   void on_image(const sensor_msgs::msg::CompressedImage & msg);
+  void on_tracked(const vision_msgs::msg::Detection3DArray & msg);
+  void on_pick_state(const std_msgs::msg::String & msg);
   // Lists image topics and follows the camera panel's choice.
   void refresh_image_topics();
 
@@ -167,6 +222,9 @@ private:
   std::string subscribed_image_topic_;
   rclcpp::Subscription<visualization_msgs::msg::Marker>::SharedPtr fov_sub_;
   rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr cubes_sub_;
+  rclcpp::Subscription<vision_msgs::msg::Detection3DArray>::SharedPtr tracked_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr pick_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr test_sub_;
   rclcpp::TimerBase::SharedPtr topics_timer_;
   rclcpp::CallbackGroup::SharedPtr image_group_;   // decoding must not hold up the joint states
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
