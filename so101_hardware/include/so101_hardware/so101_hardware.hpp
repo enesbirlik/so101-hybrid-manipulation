@@ -2,7 +2,8 @@
 //
 // The single owner of the serial bus while it runs. One SYNC READ (position, speed, load,
 // voltage, temperature and current of all servos) and one SYNC WRITE (goal positions) per
-// control period. Ticks <-> radians use
+// control period, plus a SYNC WRITE of the torque limits in the cycles where a runtime
+// torque_limit command changes them. Ticks <-> radians use
 // so101_bringup/config/so101_calibration.yaml:
 //   joint_rad = direction * (ticks - zero) * 2*pi / 4096
 #pragma once
@@ -14,6 +15,7 @@
 #include "hardware_interface/system_interface.hpp"
 #include "so101_hardware/feetech_bus.hpp"
 #include "so101_hardware/servo_gains.hpp"
+#include "so101_hardware/torque_limit.hpp"
 
 namespace so101_hardware
 {
@@ -34,7 +36,7 @@ struct ServoReading
 {
   int ticks = 0;
   int speed = 0;             // step/s
-  double load = 0.0;         // % of the torque limit, signed like the joint
+  double load = 0.0;         // %, register 60 in 0.1 % steps, signed like the joint
   double voltage = 0.0;      // V
   double temperature = 0.0;  // deg C
   double current = 0.0;      // A
@@ -56,12 +58,18 @@ private:
   int to_ticks(const JointCalibration & c, double rad) const;
   bool read_bus(std::vector<ServoReading> & servos);
   void set_torque(bool on);
+  void write_torque_limits();
 
   std::vector<JointCalibration> joints_;
   std::vector<uint8_t> ids_;
   std::unique_ptr<FeetechBus> bus_;
   std::string port_;
-  int torque_limit_ = 1000;   // 0.1 %
+  // Torque limit (0.1 %) per joint: the parameter, written on activation, is also the ceiling
+  // for the optional runtime `torque_limit` command interface.
+  std::vector<int> torque_ceiling_;
+  std::vector<int> torque_applied_;   // last value written to the servo
+  std::vector<bool> torque_command_;  // the joint declares a torque_limit command interface
+  std::vector<bool> torque_state_;    // ... and a torque_limit state interface
   int acceleration_ = 0;      // 100 step/s^2, 0 = servo default (no limit)
   int goal_speed_ = 0;        // step/s, 0 = no limit
   std::vector<ServoGains> gains_;   // per joint, written to RAM on activation
