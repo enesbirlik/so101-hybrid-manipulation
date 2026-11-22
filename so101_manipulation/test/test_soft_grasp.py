@@ -189,3 +189,38 @@ def test_simulated_measurement():
     assert sg.simulated_measurement(5.0, 5.0, float("nan")) == 5.0
     assert sg.simulated_measurement(12.0, 12.0, 13.5) == 13.5
     assert sg.simulated_measurement(30.0, 30.0, 13.5) == 30.0
+
+
+def test_ramp_start_lag_above_the_window_is_not_contact():
+    """Real arm, 2026-11-22, torque limit 20 %: right after the close starts at 29.6 deg the jaw
+    trails the ramp by > 1 deg; that counted as contact at 27 deg. Above expected + window the lag
+    only trains the baseline; a jaw blocked at 13.5 deg is still caught."""
+    expected = sg.expected_contact_deg(30.0)
+    det = sg.ContactDetector(P, static_baseline_lag=0.0, ignore_above_deg=expected + P.window_deg)
+    t, cmd, meas = 0.0, 29.6, 29.6
+    while cmd > 13.6:
+        lag = 2.5 if cmd > 26.0 else 0.4           # start-up trailing, then steady tracking
+        assert det.update(t, cmd, cmd + lag) is None
+        t += 0.01
+        cmd -= 0.06
+    ev = None
+    for _ in range(100):
+        ev = det.update(t, cmd, 13.5)
+        if ev:
+            break
+        t += 0.01
+        cmd -= 0.06
+    assert ev is not None and abs(ev.angle_deg - 13.5) < 1e-9
+
+
+def test_jaws_blocked_above_the_window_still_seen():
+    """Something wide between the jaws stops them at 22 deg: once the command passes the window the
+    gap is large, so the detector reports it (the node then aborts as 'early')."""
+    expected = sg.expected_contact_deg(30.0)
+    det = sg.ContactDetector(P, static_baseline_lag=0.4, ignore_above_deg=expected + P.window_deg)
+    t, cmd, ev = 0.0, 29.6, None
+    while cmd > 11.5 and ev is None:
+        ev = det.update(t, cmd, max(cmd + 0.4, 22.0))
+        t += 0.01
+        cmd -= 0.06
+    assert ev is not None and ev.angle_deg > expected + P.window_deg

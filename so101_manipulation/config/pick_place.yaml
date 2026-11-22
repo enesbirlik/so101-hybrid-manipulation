@@ -48,7 +48,7 @@ cube_pick_place:
     motion_contact_lag_deg: 4.0  # lag above the previous step's during a step = contact
     descend_lag_samples: 15  # controller states averaged after each step
     # soft grasp (gripper)
-    close_speed_deg_s: 12.0  # closing ramp speed
+    close_speed_deg_s: 6.0  # closing ramp speed
     open_speed_deg_s: 20.0  # opening speed (release, abort)
     contact_lag_deg: 1.0  # contact when measured - commanded (= -(controller lag), positive when blocked) is this far above its free-closing baseline
     contact_samples: 3  # consecutive samples over the threshold

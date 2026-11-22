@@ -103,6 +103,10 @@ class ContactDetector:
     run: int = 0
     peak_load: float = 0.0
     peak_excess: float = 0.0
+    # The cube cannot touch the jaws while the command is above expected + window: there the lag only
+    # trains the baseline. At torque limit 20 % the jaw trails a 12 deg/s ramp by > 1 deg right after
+    # it starts, which counted as contact at 27 deg on 2026-11-22.
+    ignore_above_deg: float = float("inf")
 
     def baseline(self, t: float):
         a, b = self.p.baseline_window_s
@@ -124,6 +128,9 @@ class ContactDetector:
         # standing value and a wider threshold
         thr = self.p.lag_deg if warm else self.p.lag_deg * self.p.warmup_factor
         self.hist.append((t, blocked, load))
+        if commanded_deg > self.ignore_above_deg:
+            self.run = 0
+            return None
         self.peak_excess = max(self.peak_excess, excess)
         if not math.isnan(load):
             self.peak_load = max(self.peak_load, abs(load))

@@ -92,7 +92,7 @@ PARAMS = {
     "motion_contact_lag_deg": (4.0, "lag above the previous step's during a step = contact"),
     "descend_lag_samples": (15, "controller states averaged after each step"),
     # soft grasp (gripper)
-    "close_speed_deg_s": (12.0, "closing ramp speed"),
+    "close_speed_deg_s": (6.0, "closing ramp speed"),
     "open_speed_deg_s": (20.0, "opening speed (release, abort)"),
     "contact_lag_deg": (1.0, "contact when measured - commanded (= -(controller lag), positive when blocked) is this "
                                 "far above its free-closing baseline"),
@@ -478,7 +478,8 @@ class PickPlaceNode(Node):
             lags.append(sg.simulated_measurement(ref, fb, p.sim_contact_deg) - ref)
         load0 = self.motion.gripper_load()
         det = sg.ContactDetector(P, static_baseline_lag=float(np.median(lags)) if lags else 0.0,
-                                 static_baseline_load=0.0 if math.isnan(load0) else load0)
+                                 static_baseline_load=0.0 if math.isnan(load0) else load0,
+                                 ignore_above_deg=self.expected_contact + P.window_deg)
         start = self.grip_measured_deg()
         end = sg.ramp_end_deg(self.expected_contact, P)          # = the floor
         dur = max(0.5, (start - end) / P.closing_speed_deg_s)
