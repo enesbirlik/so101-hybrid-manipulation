@@ -10,7 +10,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
 <p align="center">
-  <img src="docs/media/2026-11-21-build-log-3.jpg" alt="SO-101 arm executing a MoveIt 2 plan on the real hardware" width="480">
+  <img src="docs/media/2026-11-22-arm-and-cubes.jpg" alt="The SO-101 arm with its wrist camera next to six ArUco cubes on the table" width="720">
 </p>
 
 This is a long-running, open build log of an SO-101 arm built from scratch: hardware, ROS 2 integration, perception, and learning. Progress is tracked in [`roadmap.json`](roadmap.json) and documented step by step in the [devlog](docs/devlog/).
@@ -33,6 +33,27 @@ Hypotheses, metrics, and the planned experiment protocol: [docs/research/experim
 | Power supply | 12 V 10 A constant-voltage PSU | 1 |
 | Camera | USB camera, 32×32 mm module, 135° wide-angle (fisheye) lens, wrist/gripper-mounted | 1 |
 | Leader arm | None. Kinesthetic teaching (gravity compensation in PWM mode) is planned instead | — |
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/media/2026-11-22-wrist-over-cubes.jpg" alt="Wrist and gripper above the ArUco cubes"></td>
+    <td width="50%"><img src="docs/media/2026-11-22-wrist-camera.jpg" alt="The 32×32 mm fisheye camera module on the wrist mount"></td>
+  </tr>
+  <tr>
+    <td>Wrist and gripper over the 30 mm ArUco cubes</td>
+    <td>The 135° fisheye camera module on the wrist</td>
+  </tr>
+</table>
+
+### Dashboard
+
+[`so101_dashboard`](so101_dashboard/) runs the arm through MoveIt tasks and shows it live: the URDF posed from `/joint_states`, the camera field of view and the ArUco cubes the detector found, labelled with their position in `base_link`.
+
+<p align="center">
+  <img src="docs/media/2026-11-22-dashboard-3d-tasks.gif" alt="Dashboard 3D view while the real arm runs UNFOLD, ZERO and REST" width="600">
+</p>
+
+![Dashboard with the 3D view, camera, tasks, joint telemetry and plots](docs/media/2026-11-22-dashboard.png)
 
 ## Roadmap
 
