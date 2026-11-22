@@ -105,6 +105,7 @@ ros2 launch so101_description display.launch.py
 | [`so101_bringup/`](so101_bringup/) | Joint calibration, controller config, control launch (mock or real hardware) | ✅ package |
 | [`so101_moveit_config/`](so101_moveit_config/) | MoveIt 2 configuration (pick_ik, OMPL, Pilz), demo launch | ✅ package |
 | [`so101_perception/`](so101_perception/) | Wrist camera publisher, fisheye + hand-eye calibration, ArUco cube detector (cube poses in `base_link`) | ✅ package (camera, cubes) |
+| [`so101_manipulation/`](so101_manipulation/) | Cube pick and place: `PickCube` / `PlaceCube` action server (search, close-up refinement, vertical grasp, soft grasp with a hard gripper floor), CLI, fake cube for mock tests; actions in `so101_manipulation_interfaces/` | ✅ package (mock-tested) |
 | [`so101_bt/`](so101_bt/) | Behavior Tree orchestration and handover logic | placeholder (phases 6, 7) |
 | [`so101_policy/`](so101_policy/) | Demonstration data and VLA policy inference | placeholder (phase 6) |
 | [`so101_dashboard/`](so101_dashboard/) | Local robot monitor (raylib + Dear ImGui): 3D view, tasks, wrist camera, joint telemetry | ✅ package |
