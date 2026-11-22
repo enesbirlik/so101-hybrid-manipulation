@@ -18,7 +18,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument("params_file", default_value=PathJoinSubstitution(
             [FindPackageShare("so101_manipulation"), "config", "pick_place.yaml"])),
-        DeclareLaunchArgument("sim_contact_deg", default_value=".nan",
+        DeclareLaunchArgument("sim_contact_deg", default_value="nan",
                               description="MOCK ONLY: simulated cube contact angle (refused on real hardware)"),
         DeclareLaunchArgument("fake_cube", default_value="false", description="publish a FAKE cube on /cubes/detections"),
         DeclareLaunchArgument("fake_x", default_value="0.22"),
