@@ -1,0 +1,18 @@
+# Put the cube held after PickCube down at (x, y) on the table, or on top of another cube.
+# Phases (feedback.phase): carry, refine (stacking only), descend, release, retreat.
+
+# Goal
+float64 x                 # base_link [m], cube centre; ignored when on_cube_id is set
+float64 y
+string on_cube_id         # empty: on the table; else stack on that cube (seen by the camera)
+float64 yaw_deg           # cube yaw on the table [deg]; NaN: any (smallest wrist roll change)
+---
+# Result
+bool success
+string message
+string failed_phase
+geometry_msgs/Point placed_position   # base_link, where the cube centre was released
+---
+# Feedback
+string phase
+string detail

@@ -4,7 +4,15 @@
   <!-- Servo position loop gains per joint (P, D, I: integers 0..254), for tuning joints separately. A joint or
        gain left out gets the hardware-level <param> if any, else the built-in 16 / 32 / 0 (so101_hardware/README.md).
        Example: dict(shoulder_pan=dict(p=32), shoulder_lift=dict(p=32, d=40)) (no { } inside ${ }). Only used with the real hardware. -->
-  <xacro:property name="joint_gains" value="${dict()}"/>
+  <!-- 2026-11-22: P 32 on elbow_flex and wrist_flex, 24 on shoulder_lift (32 hunted +-0.5 deg in the unloaded,
+       folded-back overview pose, which blinded the cube detector's motion gate). Higher P on the joints that carry the arm against gravity. At 16 they stick-slipped in slow moves
+       (jitter in the descent) and stayed 2-3 deg short under load; shoulder_pan stays at 16 (higher P grew its
+       4-5 Hz ripple, 2026-11-21 sweep). -->
+  <xacro:property name="joint_gains" value="${dict(shoulder_lift=dict(p=24), elbow_flex=dict(p=32), wrist_flex=dict(p=32))}"/>
+  <!-- Servo torque limit per joint, 0.1 % units (integer 0..1000), written on activation; also the ceiling for the
+       runtime gripper/torque_limit command. A joint left out gets the hardware-level <param> if any, else 1000.
+       Example: dict(gripper=500). Only used with the real hardware. -->
+  <xacro:property name="joint_torque_limits" value="${dict()}"/>
   <xacro:macro name="so101_ros2_control" params="name use_mock_hardware">
     <ros2_control name="${name}" type="system">
       <hardware>
@@ -16,17 +24,23 @@
           <plugin>so101_hardware/SO101Hardware</plugin>
         </xacro:unless>
       </hardware>
-      <xacro:macro name="so101_joint" params="joint p_coefficient:='' d_coefficient:='' i_coefficient:=''">
+      <xacro:macro name="so101_joint" params="joint p_coefficient:='' d_coefficient:='' i_coefficient:='' torque_limit:='' torque_limit_interface:=false">
         <!-- explicit macro arguments win over the joint_gains table -->
         <xacro:property name="gains" value="${joint_gains.get(joint, dict())}"/>
         <xacro:property name="p" value="${p_coefficient if p_coefficient != '' else gains.get('p', '')}"/>
         <xacro:property name="d" value="${d_coefficient if d_coefficient != '' else gains.get('d', '')}"/>
         <xacro:property name="i" value="${i_coefficient if i_coefficient != '' else gains.get('i', '')}"/>
+        <xacro:property name="tl" value="${torque_limit if torque_limit != '' else joint_torque_limits.get(joint, '')}"/>
         <joint name="${joint}">
           <xacro:if value="${p != ''}"><param name="p_coefficient">${p}</param></xacro:if>
           <xacro:if value="${d != ''}"><param name="d_coefficient">${d}</param></xacro:if>
           <xacro:if value="${i != ''}"><param name="i_coefficient">${i}</param></xacro:if>
+          <xacro:if value="${tl != ''}"><param name="torque_limit">${tl}</param></xacro:if>
           <command_interface name="position"/>
+          <xacro:if value="${torque_limit_interface}">
+            <!-- runtime torque limit, 0.1 % units, clamped to 0..torque_limit; NaN (the start value) = keep -->
+            <command_interface name="torque_limit"/>
+          </xacro:if>
           <state_interface name="position">
             <param name="initial_value">0.0</param>
           </state_interface>
@@ -36,6 +50,12 @@
           <state_interface name="current"/>
           <state_interface name="temperature"/>
           <state_interface name="voltage"/>
+          <xacro:if value="${torque_limit_interface}">
+            <!-- the torque limit last written to the servo, 0.1 % units -->
+            <state_interface name="torque_limit">
+              <param name="initial_value">1000.0</param>
+            </state_interface>
+          </xacro:if>
         </joint>
       </xacro:macro>
       <xacro:so101_joint joint="shoulder_pan"/>
@@ -43,7 +63,8 @@
       <xacro:so101_joint joint="elbow_flex"/>
       <xacro:so101_joint joint="wrist_flex"/>
       <xacro:so101_joint joint="wrist_roll"/>
-      <xacro:so101_joint joint="gripper"/>
+      <!-- the gripper's torque limit can be lowered at runtime, to grasp without crushing (gripper_torque_controller) -->
+      <xacro:so101_joint joint="gripper" torque_limit_interface="true"/>
       <!-- all servos' torque: 1 = on, 0 = off (the arm hangs free, e.g. to teach it by hand) -->
       <gpio name="torque">
         <command_interface name="enable"/>

@@ -65,7 +65,7 @@ Single source of truth: [`roadmap.json`](roadmap.json).
 | 2 | Assembly & first motor test | ✅ done (2026-10-25) |
 | 3 | Calibration, URDF matching, fisheye camera calibration | ✅ done (2026-11-01) |
 | 4 | C++ `ros2_control` interface + MoveIt 2 | ✅ done |
-| 5 | Perception: ArUco + object detection → classical pick & place | 🚧 active (ArUco cube detector in place) |
+| 5 | Perception: ArUco + object detection → classical pick & place | 🚧 active (cube pick, place and 3-high stacking on the real arm) |
 | 6 | Behavior Tree + demonstration data + VLA policy | ⬜ todo |
 | 7 | Hybrid orchestration & benchmark | ⬜ todo |
 
@@ -105,9 +105,10 @@ ros2 launch so101_description display.launch.py
 | [`so101_bringup/`](so101_bringup/) | Joint calibration, controller config, control launch (mock or real hardware) | ✅ package |
 | [`so101_moveit_config/`](so101_moveit_config/) | MoveIt 2 configuration (pick_ik, OMPL, Pilz), demo launch | ✅ package |
 | [`so101_perception/`](so101_perception/) | Wrist camera publisher, fisheye + hand-eye calibration, ArUco cube detector (cube poses in `base_link`) | ✅ package (camera, cubes) |
+| [`so101_manipulation/`](so101_manipulation/) | Cube pick and place: `PickCube` / `PlaceCube` action server (look/search, close-up refinement, vertical and tilted grasps 10–43 cm, soft grasp with a hard gripper floor, stacking), CLI, fake cube for mock tests; actions in `so101_manipulation_interfaces/` | ✅ package (real arm) |
 | [`so101_bt/`](so101_bt/) | Behavior Tree orchestration and handover logic | placeholder (phases 6, 7) |
 | [`so101_policy/`](so101_policy/) | Demonstration data and VLA policy inference | placeholder (phase 6) |
-| [`so101_dashboard/`](so101_dashboard/) | Local robot monitor (raylib + Dear ImGui): 3D view, tasks, wrist camera, joint telemetry | ✅ package |
+| [`so101_dashboard/`](so101_dashboard/) | Local robot monitor (raylib + Dear ImGui): 3D view, tasks, wrist camera, joint telemetry, click a cube to pick it and the table to place it | ✅ package |
 | [`tools/`](tools/) | Standalone helper scripts: Feetech bus driver, joint calibration, live joint states, teleop, camera calibration | active |
 | [`docs/devlog/`](docs/devlog/) | Dated build log entries | active |
 | [`docs/research/`](docs/research/) | Hypotheses, metrics, experiment protocol | draft |
@@ -123,6 +124,7 @@ ros2 launch so101_description display.launch.py
 - [Day 5 — ros2_control and MoveIt 2 on the real arm](docs/devlog/2026-11-06-day-5.md) (2026-11-01, 2026-11-06)
 - [Day 6 — Shoulder zero, ruler and the pan shake](docs/devlog/2026-11-14-day-6.md) (2026-11-14)
 - [Day 7 — Gains, a gripper that could not close, and a first grasp attempt](docs/devlog/2026-11-21-day-7.md) (2026-11-21)
+- [Day 8 — Paper cubes: one crushed, then picked, placed and stacked three high](docs/devlog/2026-11-22-day-8.md) (2026-11-22)
 
 New entries follow [`docs/devlog/template.md`](docs/devlog/template.md). Videos are linked from the entries, not stored in the repo.
 

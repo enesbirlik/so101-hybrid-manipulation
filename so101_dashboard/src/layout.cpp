@@ -146,8 +146,8 @@ void Layout::dock_space(float status_bar_height)
     ImGuiID top, bottom, left, right, camera, below_camera, tasks, log, joints, plots;
     ImGui::DockBuilderSplitNode(id, ImGuiDir_Down, 0.34f, &bottom, &top);
     ImGui::DockBuilderSplitNode(top, ImGuiDir_Right, 0.44f, &right, &left);
-    ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.52f, &camera, &below_camera);
-    ImGui::DockBuilderSplitNode(below_camera, ImGuiDir_Up, 0.6f, &tasks, &log);
+    ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.40f, &camera, &below_camera);
+    ImGui::DockBuilderSplitNode(below_camera, ImGuiDir_Up, 0.7f, &tasks, &log);
     ImGui::DockBuilderSplitNode(bottom, ImGuiDir_Left, 0.56f, &joints, &plots);
     ImGui::DockBuilderDockWindow(WIN_VIEW, left);
     ImGui::DockBuilderDockWindow(WIN_CAMERA, camera);

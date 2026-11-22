@@ -1,5 +1,6 @@
 // SO-101 dashboard: one raylib window with docked ImGui panels; ROS runs on a background thread.
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <filesystem>
@@ -52,10 +53,15 @@ int main(int argc, char ** argv)
   executor.add_node(node);
   std::thread ros_thread([&executor] {executor.spin();});
 
-  SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
-  InitWindow(1600, 960, "SO-101 // MISSION CONTROL");
+  // SO101_DASHBOARD_UNCAPPED=1 (tests): no vsync, no frame cap, to measure the frame rate
+  const char * uncapped_env = std::getenv("SO101_DASHBOARD_UNCAPPED");
+  const bool uncapped = uncapped_env && std::string(uncapped_env) == "1";
+  SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_MSAA_4X_HINT | (uncapped ? 0 : FLAG_VSYNC_HINT));
+  // SO101_DASHBOARD_TITLE: another window title, e.g. for a test instance next to the real one
+  const char * title = std::getenv("SO101_DASHBOARD_TITLE");
+  InitWindow(1600, 960, title && *title ? title : "SO-101 // MISSION CONTROL");
   SetWindowMinSize(900, 600);
-  SetTargetFPS(60);
+  SetTargetFPS(uncapped ? 0 : 60);
   SetExitKey(KEY_NULL);   // Esc must not close the window
 
   rlImGuiSetLoadFontsCallback(sd::theme::load_fonts);
@@ -70,14 +76,21 @@ int main(int argc, char ** argv)
   auto view = std::make_unique<sd::RobotView>();
   auto camera = std::make_unique<sd::CameraView>();
 
+  using Clock = std::chrono::steady_clock;
+  const auto ms_since = [](Clock::time_point t) {
+      return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
+    };
   while (!WindowShouldClose() && rclcpp::ok()) {
+    const auto frame_start = Clock::now();
     BeginDrawing();
     ClearBackground(sd::theme::to_raylib(sd::theme::BG));
     rlImGuiBegin();
     layout.begin_frame(STATUS_BAR_H);
     // a closed panel is not drawn at all (and a closed camera panel stops the image subscription)
     if (bool * open = layout.open(sd::WIN_VIEW); *open) {
-      view->draw(state, open);
+      const auto view_start = Clock::now();
+      view->draw(state, tasks, open);
+      state.perf.add_view(ms_since(view_start));   // GUI thread only, no lock
     }
     {
       bool * open = layout.open(sd::WIN_CAMERA);
@@ -104,8 +117,17 @@ int main(int argc, char ** argv)
     sd::draw_status_bar(state, STATUS_BAR_H);
     rlImGuiEnd();
     EndDrawing();
+    state.perf.add_frame(ms_since(frame_start));
+    std::string shot;
+    {
+      std::lock_guard<std::mutex> lock(state.mutex);
+      shot.swap(state.screenshot);   // the test hook's named screenshot
+    }
     if (IsKeyPressed(KEY_F12) || screenshot_requested.exchange(false)) {
-      TakeScreenshot("so101_dashboard.png");
+      shot = "so101_dashboard.png";
+    }
+    if (!shot.empty()) {
+      TakeScreenshot(shot.c_str());
     }
   }
 
