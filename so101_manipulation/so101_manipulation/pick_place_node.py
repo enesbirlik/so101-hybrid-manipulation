@@ -116,6 +116,7 @@ PARAMS = {
     "free_descent_lag_deg": (4.5, "descent above the contact zone: lag over the hover baseline that stops it (safety net)"),
     "contact_warmup_s": (0.4, "contact zone: the first part of the move learns the moving lag baseline"),
     "contact_zone_speed_factor": (0.5, "contact zone: descent speed x this (less tracking lag, more time to react)"),
+    "final_trim_tol_m": (0.003, "after the descent: trim again when the tip ended higher than its goal by more than this"),
     "contact_zone_m": (0.035, "the last part of the descent (tip within this of its goal) runs with the tight contact threshold"),
     "descend_lag_samples": (15, "controller states averaged after each step"),
     # soft grasp (gripper)
@@ -705,6 +706,13 @@ class PickPlaceNode(Node):
         if not res.ok:
             raise Fail("descend", f"arm move failed: {res.error}")
         self.feedback("descend", f"down at {h_now * 100:.1f} cm, {j} lag rise peak {peak[0]:+.2f} deg")
+        # At full stretch the hover trim does not hold down to the bottom (35 cm, 10 deg lean: the tip
+        # stopped 13 mm high, the jaws held the cube by its top edge and lost it in the lift,
+        # 2026-11-22). No contact was seen, so the jaws are still free around the cube: trim again here.
+        if not stop_on_contact_ok and h_now - hs[-1] > p.final_trim_tol_m:
+            self.arm_bias = self.trim(pts[-1])
+            h2 = float(self.model.tip(np.asarray(self.motion.q_arm()))[2] - self.model.table_z)
+            self.feedback("descend", f"bottom trim: tip {h_now * 100:.1f} -> {h2 * 100:.1f} cm (goal {hs[-1] * 100:.1f})")
         return len(plan.descent) - 1
 
     def soft_close(self):

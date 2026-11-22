@@ -302,6 +302,7 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 | `free_descent_lag_deg` | `4.5` | descent above the contact zone: lag over the hover baseline that stops it (safety net) |
 | `contact_warmup_s` | `0.4` | contact zone: the first part of the move learns the moving lag baseline |
 | `contact_zone_speed_factor` | `0.5` | contact zone: descent speed x this (less tracking lag, more time to react) |
+| `final_trim_tol_m` | `0.003` | after the descent: trim again when the tip ended higher than its goal by more than this |
 | `contact_zone_m` | `0.035` | the last part of the descent (tip within this of its goal) runs with the tight contact threshold |
 | `descend_lag_samples` | `15` | controller states averaged after each step |
 
