@@ -265,6 +265,36 @@ class AutoCubeTracker(CubeTracker):
         return sorted(set(self.tracked.known()) | set(self.detections.known()))
 
 
+class FrameTimes:
+    """Capture times (node monotonic clock) of the frames the detector processed, from the per-frame
+    /cubes/detections messages (published for every frame taken while the arm stood still, also
+    when no cube is in it). "N frames since t without cube k" means cube k is not in view."""
+
+    def __init__(self, maxlen=200):
+        self.t = deque(maxlen=maxlen)
+
+    def add(self, obs_t):
+        if not self.t or obs_t > self.t[-1] + 1e-4:
+            self.t.append(float(obs_t))
+
+    def count_since(self, since) -> int:
+        return sum(1 for t in self.t if t >= since)
+
+
+class FrameClock(FrameTimes):
+    def __init__(self, node, topic="/cubes/detections", callback_group=None):
+        from vision_msgs.msg import Detection3DArray
+        super().__init__()
+        self.node = node
+        self.sub = node.create_subscription(Detection3DArray, topic, self.on_frame, 10, callback_group=callback_group)
+
+    def on_frame(self, msg):
+        recv = time.monotonic()
+        ros_now = self.node.get_clock().now().nanoseconds * 1e-9
+        st = msg.header.stamp
+        self.add(recv - max(0.0, ros_now - (st.sec + st.nanosec * 1e-9)))
+
+
 def make_cube_tracker(node, source="auto", detections_topic="/cubes/detections", tracked_topic="/cubes/tracked",
                       min_fresh=3, **kw) -> CubeTracker:
     if source == "detections":
