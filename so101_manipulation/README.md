@@ -298,7 +298,9 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 | Parameter | Default | Meaning |
 |---|---|---|
 | `contact_joint` | `shoulder_lift` | joint whose lag (reference - feedback) shows a contact |
-| `descend_contact_lag_deg` | `2.5` | lag above the hover baseline during the descent = contact |
+| `descend_contact_lag_deg` | `2.5` | lag over the baseline measured at the contact zone = contact |
+| `free_descent_lag_deg` | `4.5` | descent above the contact zone: lag over the hover baseline that stops it (safety net) |
+| `contact_zone_m` | `0.035` | the last part of the descent (tip within this of its goal) runs with the tight contact threshold |
 | `descend_lag_samples` | `15` | controller states averaged after each step |
 
 **Soft grasp (gripper)**

@@ -112,7 +112,9 @@ PARAMS = {
     "refine_required": (False, "abort when the close-up sees no stable cube (else keep the far estimate)"),
     # contact on the way down (arm)
     "contact_joint": ("shoulder_lift", "joint whose lag (reference - feedback) shows a contact"),
-    "descend_contact_lag_deg": (2.5, "lag above the hover baseline during the descent = contact"),
+    "descend_contact_lag_deg": (2.5, "lag over the baseline measured at the contact zone = contact"),
+    "free_descent_lag_deg": (4.5, "descent above the contact zone: lag over the hover baseline that stops it (safety net)"),
+    "contact_zone_m": (0.035, "the last part of the descent (tip within this of its goal) runs with the tight contact threshold"),
     "descend_lag_samples": (15, "controller states averaged after each step"),
     # soft grasp (gripper)
     "close_speed_deg_s": (6.0, "closing ramp speed inside the contact window (and close_slow_lead_deg above it)"),
@@ -633,29 +635,45 @@ class PickPlaceNode(Node):
         self.arm_bias = self.trim(plan.hover.q)
         self.feedback("descend", "hover trim " + ", ".join(f"{n.split('_')[1]} {math.degrees(b):+.1f}"
                                                          for n, b in zip(ARM, self.arm_bias) if abs(b) > 1e-4))
-        base = sgn * self.motion.mean_lag(j, int(p.descend_lag_samples))
-        # Gravity alone drifts the lag slowly as the arm goes down (+1.1 deg over 6 cm at servo P 32,
-        # 2026-11-22); a jaw landing on something lifts it at once. One move instead of 1 cm steps
-        # (stop, settle, measure: ~8 s and stick-slip at every start).
+        # Gravity alone drifts the lag as the arm goes down (+1.1 deg over 6 cm at servo P 32; up to
+        # +2.8 deg at full stretch with lift P 24, 2026-11-22, nothing touched). Nothing can be touched
+        # until the tip is near its goal, so the descent is two moves: down to `contact_zone_m` above the
+        # goal with only a wide safety threshold, then the lag baseline is measured again and the last
+        # part runs with the tight one.
         peak = [0.0]
+        state = {"base": sgn * self.motion.mean_lag(j, int(p.descend_lag_samples)), "thr": p.free_descent_lag_deg}
 
         def monitor(samples):
             for s_ in samples:
-                ex = sgn * math.degrees(s_.ref[j] - s_.fb[j]) - base
+                ex = sgn * math.degrees(s_.ref[j] - s_.fb[j]) - state["base"]
                 peak[0] = max(peak[0], ex)
-                if ex > p.descend_contact_lag_deg:
+                if ex > state["thr"]:
                     return True
             return False
         pts = [r.q for r in plan.descent]
-        span = float(np.max(np.abs(np.asarray(pts[-1]) - np.asarray(plan.hover.q))))
-        total = max(self.motion.min_move_s, span / max(1e-3, p.descend_speed))
-        times = [total * (k + 1) / len(pts) for k in range(len(pts))]
-        self.feedback("descend", f"down to {plan.heights[-1] * 100:.1f} cm in {total:.1f} s")
-        res = self.motion.run("arm", pts, times=times, monitor=monitor, bias=self.arm_bias, through=True)
+        hs = list(plan.heights)
+        k = next((n for n, h in enumerate(hs) if h <= hs[-1] + p.contact_zone_m + 1e-6), 0)
+        phases = ([(pts[:k], p.free_descent_lag_deg)] if k > 0 else []) + [(pts[k:], p.descend_contact_lag_deg)]
+        self.feedback("descend", f"down to {hs[-1] * 100:.1f} cm; contact watch tight below {hs[k] * 100:.1f} cm")
+        prev_q = np.asarray(plan.hover.q)
+        res = None
+        for seg, thr in phases:
+            if not seg:
+                continue
+            if thr != state["thr"]:
+                state["base"] = sgn * self.motion.mean_lag(j, int(p.descend_lag_samples))
+                state["thr"] = thr
+            span = float(np.max(np.abs(np.asarray(seg[-1]) - prev_q)))
+            total = max(self.motion.min_move_s, span / max(1e-3, p.descend_speed))
+            times = [total * (n + 1) / len(seg) for n in range(len(seg))]
+            res = self.motion.run("arm", seg, times=times, monitor=monitor, bias=self.arm_bias, through=True)
+            prev_q = np.asarray(seg[-1])
+            if res.stopped or not res.ok:
+                break
         h_now = float(self.model.tip(np.asarray(self.motion.q_arm()))[2] - self.model.table_z)
         i = int(np.argmin([abs(h - h_now) for h in plan.heights]))
         if res.stopped:
-            msg = f"contact at {h_now * 100:.1f} cm ({j} lag {peak[0]:+.1f} deg over the hover)"
+            msg = f"contact at {h_now * 100:.1f} cm ({j} lag {peak[0]:+.1f} deg, threshold {state['thr']:.1f})"
             if stop_on_contact_ok:
                 self.feedback("descend", msg + ": stopping here")
                 return i
@@ -667,7 +685,7 @@ class PickPlaceNode(Node):
             raise Fail("descend", f"something under the jaws: {msg}")
         if not res.ok:
             raise Fail("descend", f"arm move failed: {res.error}")
-        self.feedback("descend", f"down at {h_now * 100:.1f} cm, {j} lag peak {peak[0]:+.2f} deg over the hover")
+        self.feedback("descend", f"down at {h_now * 100:.1f} cm, {j} lag peak {peak[0]:+.2f} deg over the last baseline")
         return len(plan.descent) - 1
 
     def soft_close(self):
