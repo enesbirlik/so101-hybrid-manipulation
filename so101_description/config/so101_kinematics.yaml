@@ -1,29 +1,29 @@
-# so101_hand_eye.py kinematics, 2026-11-01 20:04, 79 samples, 1 board placements
-# held-out runs: 9.89 px with the CAD origins, 4.77 px with these
+# so101_hand_eye.py kinematics, 2026-11-22 15:20, 78 samples, 2 board placements
+# no held-out check
 # Joint origins (parent link -> joint frame) that so101_new_calib.urdf reads; cad = the upstream values.
-# Data: hand_eye_s4 (2 runs, after tightening the wrist_flex screws).
-# table_z: the table surface in base_link [m]. The base stands on the table, so this is the bottom of
-# the base meshes. It was -0.0149 (ruler gaps, 2026-11-01) while shoulder_lift's zero was 5.65 deg off:
-# the 12.5 mm made up for that error at short reach. With the zero corrected (so101_calibration.yaml,
-# 2026-11-14) 8 ruler gaps under the hand, torque on, fit to 2.4 mm rms. The joint origins below and the
-# camera pose were fitted with the old zero: fit them again before using the camera.
-table_z: -0.0024
+# Data: hand_eye_20261122 samples + samples_side-20 (auto, torque on, current shoulder_lift zero 1993,
+# factory P gain 32), 1.73 px over all 78 samples. Board spread 1.4 / 1.8 mm (was 1.7 / 3.5 mm),
+# reprojection 1.5 / 1.9 px (was 3.0 / 6.4 px with the 11-01 origins and the new zero).
+# table_z: the table surface in base_link [m], from RULER gaps under the hand (torque on, 20 gaps from
+# 2026-11-14 and 2026-11-21), fitted with these origins: 1.77 mm rms (2.31 mm with the 11-01 origins).
+# The camera puts the 1 mm board ~3-4 mm lower than this: table_z stays ruler-based (CLAUDE.md).
+table_z: 0.0007
 joints:
   shoulder_lift:
     xyz: [-0.0303992, -0.0182778, -0.0542]
-    rpy: [0.0004945414218332463, -1.563368965717143, -1.5712945550630046]
+    rpy: [0.0001248981541823643, -1.5413951985648442, -1.5709249521562592]
     cad:
       xyz: [-0.0303992, -0.0182778, -0.0542]
       rpy: [-1.5708, -1.5708, 0.0]
   elbow_flex:
     xyz: [-0.11257, -0.028, 1.73763e-16]
-    rpy: [0.022902124658493003, -0.006208308620727626, 1.5707289049351953]
+    rpy: [0.016458051305828437, 0.0036186968963808313, 1.5708297790542682]
     cad:
       xyz: [-0.11257, -0.028, 1.73763e-16]
       rpy: [-3.63608e-16, 8.74301e-16, 1.5708]
   wrist_flex:
-    xyz: [-0.14578601090249904, 0.007052592732490699, -5.969097569594909e-18]
-    rpy: [-0.0016182611506589287, 0.007515524808343072, -1.5708060810708622]
+    xyz: [-0.13884291659489362, 0.007403349338619927, 2.2278051943677785e-17]
+    rpy: [-0.010555846881119787, -0.0023503437911904517, -1.5707875949445134]
     cad:
       xyz: [-0.1349, 0.0052, 3.62355e-17]
       rpy: [4.02456e-15, 8.67362e-16, -1.5708]

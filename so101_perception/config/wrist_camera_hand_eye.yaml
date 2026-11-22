@@ -1,11 +1,11 @@
-# so101_hand_eye.py kinematics, 2026-11-01 20:04, 79 samples, 1 board placements
-# held-out runs: 9.89 px with the CAD origins, 4.77 px with these
+# so101_hand_eye.py kinematics, 2026-11-22 15:20, 78 samples, 2 board placements
+# no held-out check
 # fitted together with the joint origins in so101_kinematics.yaml
 # child frame = OpenCV optical frame of the upright 1280x720 image (x right, y down, z forward)
 # rpy is URDF order (R = Rz(yaw) Ry(pitch) Rx(roll)), metres and radians
 parent_frame: gripper_link
 child_frame: wrist_camera_optical_frame
-translation: {x: -0.0009023470119067685, y: 0.07047783092030849, z: 0.0004828901093845645}
-rotation: {x: 0.9729805243163094, y: 0.02202456989254977, z: 0.0008311882752152871,
-  w: 0.2298328234788473}
-rpy: [2.6778500950795054, 0.008506580752613832, 0.04325607642898212]
+translation: {x: -0.002443211477721507, y: 0.0746381998949084, z: -0.0007926738200531883}
+rotation: {x: 0.9719902225493677, y: 0.020766583203878128, z: 0.008018213747243019,
+  w: 0.23396466515004066}
+rpy: [2.66903671495584, -0.005869991068174653, 0.04413687805559639]
