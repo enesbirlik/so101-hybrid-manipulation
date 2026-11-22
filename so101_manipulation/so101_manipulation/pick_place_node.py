@@ -82,6 +82,8 @@ PARAMS = {
     "open_deg": (30.0, "gripper opening for the approach (~53 mm gap)"),
     "grasp_tip_height": (0.011, "fixed jaw tip above the cube's bottom at the grasp"),
     "hover_height": (0.07, "fixed jaw tip above the cube's bottom at the hover"),
+    "retreat_clear_m": (0.02, "after a release the jaw tips rise this far over the released cube's top"),
+    "retreat_max_back_m": (0.08, "...drawing back toward the base by up to this when straight up is out of reach"),
     "stack_snap_m": (0.012, "stacking: the lower cube's top snaps to a whole cube level when this close"),
     "stack_min_rise_m": (0.01, "stacking: the lowest hover above the release height (vertical reach ends ~9 cm up)"),
     "hover_min_height": (0.05, "lowest hover tried when the hover is out of reach"),
@@ -562,8 +564,7 @@ class PickPlaceNode(Node):
             self.feedback("search", f"{cube} seen from here")
             return est
         views = self.search_views(cube)
-        if self.holding is None and abs(math.degrees(self.motion.grip()) - p.search_gripper_deg) > 2:
-            self.gripper_to(p.search_gripper_deg, p.open_speed_deg_s)
+        close_after_move = self.holding is None and abs(math.degrees(self.motion.grip()) - p.search_gripper_deg) > 2
         grip = math.degrees(self.motion.grip())
         for name, q in views:
             self.feedback("search", f"view {name}")
@@ -572,6 +573,10 @@ class PickPlaceNode(Node):
             except Fail as e:
                 self.get_logger().warn(f"view {name} skipped: {e.message}")
                 continue
+            if close_after_move:        # never close the jaws where the hand stood (see overview)
+                self.gripper_to(p.search_gripper_deg, p.open_speed_deg_s)
+                close_after_move = False
+                grip = math.degrees(self.motion.grip())
             est = self.look(cube, time.monotonic() + p.obs_settle_s, p.search_view_wait_s)
             if est is not None:
                 self.feedback("search", f"{cube} found from view {name}: ({est.centre[0] * 100:.1f}, "
@@ -627,6 +632,32 @@ class PickPlaceNode(Node):
         p = self.p
         return self.motion.trim_arm(q, p.trim_tol_deg, int(p.trim_max_iter), p.trim_max_bias_deg,
                                     move_s=p.trim_move_s, settle_s=p.trim_settle_s)
+
+    def clear_released(self, plan, surface, held):
+        """After a release: get the jaw tips `retreat_clear_m` above the released cube's top. A stack
+        hover can sit only ~1 cm over the release (vertical reach ends ~9 cm up), where the open jaws
+        still straddle the cube; closing them there later carried the top cube off (2026-11-22). Rise
+        straight up if reachable, else rise while drawing back toward the base."""
+        p = self.p
+        top = surface + self.edge                                    # released cube's top above the table
+        goal_h = top + p.retreat_clear_m
+        q_now = np.asarray(self.motion.q_arm())
+        h_now = float(self.model.tip(q_now)[2] - self.model.table_z)
+        if h_now >= goal_h:
+            return
+        grip = math.radians(p.open_deg)
+        xy0 = np.asarray(plan.centre_xy, float)
+        u = xy0 / max(1e-9, float(np.linalg.norm(xy0)))
+        for d in np.arange(0.0, p.retreat_max_back_m + 1e-6, 0.01):
+            r = self.planner.check(self.planner.solve(xy0 - u * d, goal_h, plan.close_yaw, grip, 0.5,
+                                                      roll_hint=float(q_now[4]), seeds=[q_now]), grip)
+            if r.ok:
+                self.feedback("retreat", f"clear of the cube: tip {h_now * 100:.1f} -> {goal_h * 100:.1f} cm"
+                                         + (f", {d * 100:.0f} cm back" if d > 0 else ""))
+                self.motion.run("arm", [r.q], p.lift_speed)
+                return
+        self.get_logger().warn(f"no pose {p.retreat_clear_m * 100:.0f} cm over the released cube: the jaws stay at "
+                               f"{h_now * 100:.1f} cm (cube top {top * 100:.1f} cm)")
 
     def descend(self, plan, grip_deg, stop_on_contact_ok=False):
         """One continuous move down through plan.descent with a contact stop. Returns the index of the
@@ -1043,6 +1074,7 @@ class PickPlaceNode(Node):
             r = self.continuous(plan.retreat_poses(i), p.lift_speed, bias=self.arm_bias)
             if not r.ok:
                 raise Fail("retreat", r.error)
+            self.clear_released(plan, surface, held)
             res.success = True
             res.message = (f"placed {held['cube']} at ({centre[0] * 100:.1f}, {centre[1] * 100:.1f}) cm"
                            + (f" on {cube_key(on)}" if on else ""))
@@ -1121,12 +1153,17 @@ class PickPlaceNode(Node):
                 # carrying a cube: keep the grip, count the cube in the clearance
                 load_below = self.holding["grasp_h"]
                 out["holding"] = self.holding["cube"]
-            elif abs(math.degrees(self.motion.grip()) - p.search_gripper_deg) > 2:
-                self.gripper_to(p.search_gripper_deg, p.open_speed_deg_s)
+            close_after_move = self.holding is None and abs(math.degrees(self.motion.grip()) - p.search_gripper_deg) > 2
             grip = math.degrees(self.motion.grip())
             seen = {}
             for name, q in self.overviews:
                 self.transit(q, grip, "overview", load_below=load_below, with_above=False)
+                if close_after_move:
+                    # never close the jaws where the hand stands: right after a stack the open jaws
+                    # still straddle the top cube, and closing them carried it off (2026-11-22)
+                    self.gripper_to(p.search_gripper_deg, p.open_speed_deg_s)
+                    close_after_move = False
+                    grip = math.degrees(self.motion.grip())
                 since = time.monotonic() + p.obs_settle_s
                 end = since + p.overview_wait_s
                 while True:
