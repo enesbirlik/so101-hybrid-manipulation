@@ -87,7 +87,7 @@ PARAMS = {
     "refine_required": (False, "abort when the close-up sees no stable cube (else keep the far estimate)"),
     # contact on the way down (arm)
     "contact_joint": ("shoulder_lift", "joint whose lag (reference - feedback) shows a contact"),
-    "descend_contact_lag_deg": (2.0, "lag above the hover baseline during the descent = contact"),
+    "descend_contact_lag_deg": (2.5, "lag above the hover baseline during the descent = contact"),
     "descend_lag_samples": (15, "controller states averaged after each step"),
     # soft grasp (gripper)
     "close_speed_deg_s": (6.0, "closing ramp speed"),

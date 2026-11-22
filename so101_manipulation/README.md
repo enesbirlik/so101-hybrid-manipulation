@@ -190,7 +190,7 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 | Parameter | Default | Meaning |
 |---|---|---|
 | `contact_joint` | `shoulder_lift` | joint whose lag (reference - feedback) shows a contact |
-| `descend_contact_lag_deg` | `2.0` | lag above the hover baseline during the descent = contact |
+| `descend_contact_lag_deg` | `2.5` | lag above the hover baseline during the descent = contact |
 | `descend_lag_samples` | `15` | controller states averaged after each step |
 
 **Soft grasp (gripper)**
