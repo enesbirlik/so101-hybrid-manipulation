@@ -131,7 +131,7 @@ def test_srdf_group_states_within_moveit_limits():
 def test_kinematics_yaml():
     k = load_yaml("so101_description/config/so101_kinematics.yaml")
     z = k["table_z"]
-    assert isinstance(z, float) and -0.05 <= z < 0, f"table_z = {z} m, expected a float in [-0.05, 0)"
+    assert isinstance(z, float) and -0.05 <= z <= 0, f"table_z = {z} m, expected a float in [-0.05, 0]"
     names = {j.get("name") for j in urdf_joints()}
     assert k["joints"], "no joints in so101_kinematics.yaml"
     for name, v in k["joints"].items():

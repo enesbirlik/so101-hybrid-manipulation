@@ -6,8 +6,10 @@
 # reprojection 1.5 / 1.9 px (was 3.0 / 6.4 px with the 11-01 origins and the new zero).
 # table_z: the table surface in base_link [m], from RULER gaps under the hand (torque on, 20 gaps from
 # 2026-11-14 and 2026-11-21), fitted with these origins: 1.77 mm rms (2.31 mm with the 11-01 origins).
-# The camera puts the 1 mm board ~3-4 mm lower than this: table_z stays ruler-based (CLAUDE.md).
-table_z: 0.0007
+# The ruler optimum is +0.7 mm, above the base bottom, which is not physical (the base stands on the
+# table): set to 0.0, within the ruler noise. The camera puts the 1 mm board ~3-4 mm lower; table_z
+# stays ruler-based (CLAUDE.md).
+table_z: 0.0
 joints:
   shoulder_lift:
     xyz: [-0.0303992, -0.0182778, -0.0542]
