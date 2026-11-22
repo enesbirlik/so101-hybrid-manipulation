@@ -34,6 +34,7 @@ WEIGHT_CLOSE = 100.0        # per unit of closing-direction error
 WEIGHT_CLOSE_SOFT = 20.0    # tilt sweep: ~1 mm per 3 deg, so a roll at its +-90 deg bound gives way in the
                             # closing direction (checked against close_tol_deg), not in the grasp position
 PLACE_MAX_TILT_DEG = 10.0   # a tilted hold that cannot go down flat may land on an edge, tilted at most this much
+CLUTTER_MAX_LEAN_DEG = 15.0  # a cube in vertical reach whose vertical grasps all meet another cube: lean at most this
 TILT_MAX_RAISE = 0.006      # tilt sweep: the grasp point rises at most this much to keep the table clearance
 ARM_SEEDS = ([0.6, -0.3, 1.4], [1.0, -0.9, 1.6], [0.3, 0.3, 1.2], [0.2, 0.6, 1.0])
 
@@ -95,6 +96,16 @@ class GraspPlan:
     exit: IKResult | None = None      # lift: after backing out along the line to the hover, straight up to this
     cube_in_hand: np.ndarray | None = None   # cube centre in gripper_link at the grasp (a tilted hold is placed with it)
     place_tilt_deg: float = 0.0       # plan_place_held: the cube lands this far from flat (0 = flat)
+    # clutter (the node's accept check): jaw opening of the approach / the release [deg], and the
+    # closest approach of the hand to another cube along the move [m] (inf: none near)
+    open_deg: float | None = None
+    release_deg: float | None = None
+    clutter_m: float = math.inf
+    clutter_with: str = ""
+
+    def poses(self) -> list:
+        """Every arm pose of the move: hover, descent ... grasp, and the exit of a tilted lift."""
+        return [self.hover.q] + [r.q for r in self.descent] + ([self.exit.q] if self.exit is not None else [])
 
     @property
     def grasp(self) -> IKResult:
@@ -264,8 +275,9 @@ class GraspPlanner:
     # --- whole grasps ---------------------------------------------------------------------
 
     def plan_vertical(self, centre_xy, close_yaws, grip, hover_heights, grasp_h, step=0.01,
-                      fraction=0.5, cube_yaw=0.0, prefer_roll=None, tilted=False):
-        """Best GraspPlan over the closing options, or (None, reasons)."""
+                      fraction=0.5, cube_yaw=0.0, prefer_roll=None, tilted=False, accept=None):
+        """Best GraspPlan over the closing options, or (None, reasons). `accept(plan)` -> (ok, why)
+        drops plans the caller cannot use (other cubes in the way of the jaws)."""
         centre_xy = np.asarray(centre_xy, float)
         pan = math.atan2(centre_xy[1], centre_xy[0])
         wv = WEIGHT_TILTED if tilted else WEIGHT_VERTICAL
@@ -302,6 +314,10 @@ class GraspPlanner:
                     continue
                 plan = GraspPlan(centre_xy=centre_xy, cube_yaw=cube_yaw, close_yaw=cy if cy is not None else self.close_yaw(r.q),
                                  hover_h=hh, grasp_h=grasp_h, hover=r, descent=steps_, heights=heights, tilted=tilted)
+                if accept is not None:
+                    ok, why_not = accept(plan)
+                    if not ok:      # a lower hover only shortens the same descent: next closing option
+                        plan, why = None, why_not
                 break
             if plan is None:
                 reasons.append(f"close {math.degrees(cy):+.0f}: {why}" if cy is not None else why)
@@ -318,20 +334,35 @@ class GraspPlanner:
         return min(plans, key=score), reasons
 
     def plan_cube(self, centre_xy, cube_yaw, grip, hover_h=0.07, hover_min_h=0.05, grasp_h=0.011,
-                  step=0.01, fraction=0.5, prefer_roll=None, close_yaws=None, cube_bottom=0.0, edge=0.03):
+                  step=0.01, fraction=0.5, prefer_roll=None, close_yaws=None, cube_bottom=0.0, edge=0.03,
+                  accept=None):
         """Grasp plan for a cube (centre xy, yaw) or (None, message): vertical jaws if they reach, else
         the smallest jaw lean of the tilt sweep (allow_tilt). Heights are above the table;
         `cube_bottom` is the cube's bottom above the table (0, or ~edge on another cube)."""
         centre_xy = np.asarray(centre_xy, float)
         heights = list(np.arange(hover_h, hover_min_h - 1e-4, -0.005)) or [hover_h]
         yaws = self.close_options(cube_yaw) if close_yaws is None else close_yaws
-        plan, reasons = self.plan_vertical(centre_xy, yaws, grip, heights, grasp_h, step, fraction, cube_yaw, prefer_roll)
+        dropped = [0]
+        if accept is not None:
+            inner = accept
+
+            def accept(plan):      # noqa: F811  (counts the plans the caller drops)
+                ok, why = inner(plan)
+                dropped[0] += 0 if ok else 1
+                return ok, why
+        plan, reasons = self.plan_vertical(centre_xy, yaws, grip, heights, grasp_h, step, fraction, cube_yaw, prefer_roll,
+                                           accept=accept)
         if plan is None and self.allow_tilt:
             # explicit tilt sweep (replaces the weighted "tilted" pass, which preferred missing the
             # cube by 2-4 cm over leaning more than ~3.5 deg)
             travels = [h - grasp_h for h in heights]
+            leans = None
+            if dropped[0]:
+                # vertical jaws reach the cube, but another cube is in their way: lean only a little to
+                # get round it (a large lean in reach is not worth the planning time, ~2 s)
+                leans = [L for L in self.lean_angles() if abs(L) <= CLUTTER_MAX_LEAN_DEG + 1e-6]
             plan, more = self.plan_tilted(centre_xy, yaws, grip, travels, grasp_h, cube_bottom, edge, step,
-                                          fraction, cube_yaw, prefer_roll)
+                                          fraction, cube_yaw, prefer_roll, leans_deg=leans, accept=accept)
             reasons = [f"vertical: {r}" for r in reasons[:2]] + [f"tilted: {r}" for r in more]
         if plan is None:
             reach = float(np.linalg.norm(centre_xy))
@@ -489,7 +520,7 @@ class GraspPlanner:
         return float(self.m.tip(q)[2] - self.m.table_z)
 
     def plan_tilted(self, centre_xy, close_yaws, grip, travels, grasp_h, cube_bottom=0.0, edge=0.03, step=0.01,
-                    fraction=0.5, cube_yaw=0.0, prefer_roll=None, leans_deg=None):
+                    fraction=0.5, cube_yaw=0.0, prefer_roll=None, leans_deg=None, accept=None):
         """Smallest-lean grasp of the tilt sweep, or (None, reasons).
 
         Grasp point: the gap point sits on the jaw axis through the cube centre at mid-height, `d`
@@ -553,6 +584,10 @@ class GraspPlanner:
                         cube_c = np.array([centre_xy[0], centre_xy[1], z0 + pivot_h])
                         plan, why = self._line_plan(centre_xy, cube_yaw, cy, grip, ph, target, a, lean, g,
                                                     travels, step, cube_c)
+                        if plan is not None and accept is not None:
+                            ok, why_not = accept(plan)
+                            if not ok:
+                                plan, why = None, why_not
                         break
                     if plan is not None:
                         plans.append(plan)
