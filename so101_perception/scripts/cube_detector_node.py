@@ -200,8 +200,13 @@ class CubeDetector(Node):
         cubes = []
         if pose is not None:
             R_wc, t_wc = pose
-            cubes = cd.cube_estimates(poses, R_wc, t_wc, table_z=self.table_z if self.snap else None,
-                                      params=self.fusion)
+            try:
+                cubes = cd.cube_estimates(poses, R_wc, t_wc, table_z=self.table_z if self.snap else None,
+                                          params=self.fusion)
+            except Exception as e:  # one bad frame must not take the detector down (2026-11-22)
+                self.get_logger().warn(f"cube fit failed on this frame, skipped: {type(e).__name__}: {e}",
+                                       throttle_duration_sec=5.0)
+                cubes = []
             t = stamp_s(msg.header.stamp)
             for e in cubes:
                 self.tracker.update(e.cube, ct.Observation(t, e.centre, e.yaw, e.confidence, e.face_spread,
