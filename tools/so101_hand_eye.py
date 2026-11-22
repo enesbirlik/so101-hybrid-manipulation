@@ -71,6 +71,8 @@ OUTLIER_FACTOR = 3.0     # samples whose board position is off by more than this
 OUTLIER_FLOOR_MM = 5.0   # times the median (and this much) are dropped once
 
 # auto: random poses around the centre pose, at most this far per joint [deg]
+AUTO_P_GAIN = 32          # factory position P gain, as in the 10-28/11-01 captures
+MIN_LIFT_DEG = -88.0      # auto poses: shoulder_lift stops mechanically near -94 (stuck there on 2026-11-22)
 AUTO_SPREAD_DEG = {"shoulder_pan": 15, "shoulder_lift": 10, "elbow_flex": 10, "wrist_flex": 25, "wrist_roll": 45}
 APPROACH_DEG = 3.0       # each pose is reached once from above and once from below
 RANGE_MARGIN_DEG = 5.0   # stay this far inside the calibrated range
@@ -518,7 +520,7 @@ def cmd_auto(args):
         started = False   # torque switched on, the arm moves
         try:
             def allowed(q):
-                if pose_problem(q, cal, chains):
+                if q.get("shoulder_lift", 0.0) < MIN_LIFT_DEG or pose_problem(q, cal, chains):
                     return False
                 T_bg = forward(chain, {n: np.radians(v) for n, v in q.items()})
                 return board_visible(np.linalg.inv(T_bg @ T_gc) @ T_bt, board_points, K, D) >= MIN_VISIBLE
@@ -555,6 +557,10 @@ def cmd_auto(args):
                 cv2.imshow("hand-eye", wait)
                 cv2.waitKey(1)
                 input("Enter switches torque on and moves there ")
+                # ros2_control leaves P 16 in the servos' RAM; at 16 the elbow stops ~2.7 deg short of a
+                # goal under load and the move counts as stuck (2026-11-22). Use the factory gains here.
+                for j in joints:
+                    bus.write_u8(j.id, fb.P_COEFFICIENT, AUTO_P_GAIN)
                 hold_all(bus, joints)
                 started = True
                 here = {n: to_deg(bus.read_position(cal[n]["id"]), cal[n]) for n in names}
