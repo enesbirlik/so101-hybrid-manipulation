@@ -2,6 +2,8 @@
 
 A local robot monitor for the SO-101: one window for watching autonomous runs and starting tasks. It is a C++ ROS 2 node drawn with [raylib](https://www.raylib.com/) and [Dear ImGui](https://github.com/ocornut/imgui), with no Qt and no browser.
 
+![so101_dashboard on the real arm](../docs/media/2026-11-22-dashboard.png)
+
 ```bash
 ros2 launch so101_moveit_config demo.launch.py use_mock_hardware:=false camera:=true rviz:=false dashboard:=true
 ros2 launch so101_dashboard dashboard.launch.py    # next to a stack that is already running

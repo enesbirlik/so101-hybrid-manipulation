@@ -226,6 +226,11 @@ bool TaskRunner::start_named(const std::string & label, const std::string & grou
   r.group_name = group;
   r.pipeline_id = options.pipeline;
   r.planner_id = options.planner;
+  // Pilz needs an IK solver for the group and the gripper has none: plan its joint goals with OMPL.
+  if (group == "gripper" && r.pipeline_id == "pilz_industrial_motion_planner") {
+    r.pipeline_id = "ompl";
+    r.planner_id = "RRTConnect";
+  }
   r.num_planning_attempts = 5;
   r.allowed_planning_time = 3.0;
   r.max_velocity_scaling_factor = options.velocity;
