@@ -200,9 +200,10 @@ class Motion:
             prev = p
         return out
 
-    def send_async(self, ctrl, points, times, through=False):
+    def send_async(self, ctrl, points, times, through=False, velocities=None):
         """`through`: no velocities on the inner points, so the controller passes them without stopping
-        (the last point still ends at rest)."""
+        (the last point still ends at rest). `velocities`: explicit per-point velocities [rad/s]
+        instead (overrides `through`)."""
         if ctrl == "gripper":
             # HARD RULE: no gripper command below the cube width (minus a small squeeze)
             points, clamped = clamp_gripper_points(points, self.gripper_floor)
@@ -214,8 +215,11 @@ class Motion:
         g.trajectory.joint_names = list(self.joints[ctrl])
         for k, (p, t) in enumerate(zip(points, times)):
             last = k == len(points) - 1
-            pt = JointTrajectoryPoint(positions=[float(v) for v in p],
-                                      velocities=[0.0] * len(p) if (last or not through) else [])
+            if velocities is not None:
+                vel = [0.0] * len(p) if last else [float(v) for v in velocities[k]]
+            else:
+                vel = [0.0] * len(p) if (last or not through) else []
+            pt = JointTrajectoryPoint(positions=[float(v) for v in p], velocities=vel)
             pt.time_from_start = duration(t)
             g.trajectory.points.append(pt)
         client = self.clients[ctrl]
@@ -236,24 +240,43 @@ class Motion:
                 raise MotionError("timeout waiting for the controller")
             time.sleep(0.005)
 
-    def trim_arm(self, target, tol_deg=0.3, max_iter=3, max_bias_deg=5.0, move_s=0.8):
+    def trim_arm(self, target, tol_deg=0.3, max_iter=2, max_bias_deg=5.0, move_s=0.4, settle_s=0.25):
         """Free space only: bring the MEASURED arm joints to `target` by adding the static tracking
         error to the command (at servo P 16 the elbow stays ~2.3 deg short under gravity, which put
         the jaws 8 mm short and 7 mm low over a cube, 2026-11-22). Returns the bias (rad per joint)
-        to add to nearby commands, e.g. the descent; never call it in contact."""
+        to add to nearby commands, e.g. the descent; never call it in contact.
+
+        Short passes: measure after `settle_s`, apply the whole measured error at once in one
+        `move_s` move, measure again; a further pass only while still beyond tol_deg (real trims
+        were 1-2 deg: lift -1.0..-1.6, elbow -0.1..-1.3, 2026-11-22; 3 x (0.3 + 0.8 + 0.3 s) before)."""
         target = np.asarray(target, float)
         bias = np.zeros(len(ARM))
         lim = math.radians(max_bias_deg)
+        time.sleep(settle_s)
         for _ in range(max_iter):
-            time.sleep(self.settle_s)
             err = target - np.asarray(self.q_arm())
             if np.max(np.abs(err)) < math.radians(tol_deg):
                 break
             bias = np.clip(bias + err, -lim, lim)
-            r = self.run("arm", [clamp_arm(target + bias, self.roll_limit)], times=[move_s])
+            r = self.run("arm", [clamp_arm(target + bias, self.roll_limit)], times=[move_s], settle=False)
             if not r.ok:
                 break
+            time.sleep(settle_s)
         return bias
+
+    def wait_result(self, gh, timeout):
+        """Wait for a goal sent with send_async (cancel-aware); True if it succeeded."""
+        fut = gh.get_result_async()
+        end = time.monotonic() + timeout
+        while not fut.done():
+            self.check_cancel()
+            if time.monotonic() > end:
+                return False
+            time.sleep(0.01)
+        for c, h in list(self.active.items()):
+            if h is gh:
+                self.active.pop(c, None)
+        return fut.result().result.error_code == FollowJointTrajectory.Result.SUCCESSFUL
 
     def run(self, ctrl, points, speed=None, times=None, monitor=None, settle=True, bias=None,
             through=False) -> MotionResult:
@@ -303,5 +326,16 @@ class Motion:
                 pass
 
     def stop_all(self):
-        for c in list(self.active):
-            self.stop(c)
+        """Cancel every active goal: all cancel requests go out first (the arm's first), then the
+        answers are awaited, so a second active goal (the gripper opening during a transit) does
+        not delay the arm's stop."""
+        futs = []
+        for c in sorted(self.active, key=lambda c: c != "arm"):
+            gh = self.active.pop(c, None)
+            if gh is not None:
+                futs.append(gh.cancel_goal_async())
+        for fut in futs:
+            try:
+                self.wait(fut, 2.0)
+            except MotionError:
+                pass

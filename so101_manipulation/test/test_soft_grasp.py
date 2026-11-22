@@ -224,3 +224,137 @@ def test_jaws_blocked_above_the_window_still_seen():
         t += 0.01
         cmd -= 0.06
     assert ev is not None and ev.angle_deg > expected + P.window_deg
+
+
+# --- two-speed close (fast above the window, slow inside it) --------------------------------
+
+P6 = sg.SoftGraspParams(closing_speed_deg_s=6.0)
+
+
+def ramp_command(pts, t, start):
+    """Linear interpolation of close_ramp points (the controller gets no inner velocities)."""
+    a0, t0 = start, 0.0
+    for a, t1 in pts:
+        if t <= t1:
+            return a0 + (a - a0) * (t - t0) / max(1e-9, t1 - t0)
+        a0, t0 = a, t1
+    return pts[-1][0]
+
+
+def test_close_ramp_never_below_the_floor_and_ends_there():
+    floor = sg.floor_deg(P6)
+    for start in (30.0, 25.0, 18.0, 12.0, 11.0, 5.0):
+        for fast in (0.0, 6.0, 20.0, 60.0):
+            pts, slow_from = sg.close_ramp(start, EXPECTED, P6, fast, 3.5)
+            assert all(a >= floor for a, _ in pts), (start, fast, pts)
+            assert pts[-1][0] == floor
+            assert [t for _, t in pts] == sorted(t for _, t in pts)
+            for t in np.linspace(0, pts[-1][1] + 1, 300):
+                assert ramp_command(pts, t, max(start, floor)) >= floor - 1e-9
+
+
+def test_close_ramp_is_slow_inside_the_window():
+    pts, slow_from = sg.close_ramp(30.0, EXPECTED, P6, 20.0, 3.5)
+    top = EXPECTED + P6.window_deg
+    assert slow_from >= top + 3.5 - 1e-9
+    assert len(pts) == 2 and pts[0][0] == slow_from
+    # fast part: only above slow_from
+    assert abs(pts[0][1] - (30.0 - slow_from) / 20.0) < 1e-9
+    # slow part: closing_speed_deg_s from slow_from to the floor (covers the whole window)
+    v = (pts[0][0] - pts[1][0]) / (pts[1][1] - pts[0][1])
+    assert abs(v - 6.0) < 1e-9
+    # sampled: every command at or below the window top moves at <= the closing speed
+    dt = 0.01
+    prev = None
+    for t in np.arange(0, pts[-1][1] + 0.2, dt):
+        c = ramp_command(pts, t, 30.0)
+        if prev is not None and prev <= top + 1e-9:
+            assert (prev - c) / dt <= 6.0 + 1e-6
+        prev = c
+    # and it is faster than the single slow ramp
+    single, _ = sg.close_ramp(30.0, EXPECTED, P6, 0.0)
+    assert pts[-1][1] < single[-1][1] - 0.8
+
+
+def test_close_ramp_starting_in_the_window_is_one_slow_ramp():
+    pts, slow_from = sg.close_ramp(16.0, EXPECTED, P6, 20.0, 3.5)
+    assert len(pts) == 1 and slow_from == 16.0
+    assert abs(pts[0][1] - (16.0 - sg.floor_deg(P6)) / 6.0) < 1e-9
+
+
+def simulate_two_speed(block_deg, fast=20.0, rate=100.0, k_lag=0.08, tau=0.15, noise=0.05, seed=1):
+    """Two-speed command; the jaw trails it by k_lag * speed (first order, tau): 1.6 deg in the
+    fast part, 0.5 in the slow one; blocked at block_deg (None: empty jaws)."""
+    rng = np.random.default_rng(seed)
+    pts, slow_from = sg.close_ramp(30.0, EXPECTED, P6, fast, 3.5)
+    det = sg.ContactDetector(P6, static_baseline_lag=0.0, ignore_above_deg=EXPECTED + P6.window_deg,
+                             baseline_below_deg=slow_from + 1e-6)
+    t, lag, prev = 0.0, 0.0, 30.0
+    while t < pts[-1][1] + 1.0:
+        c = ramp_command(pts, t, 30.0)
+        speed = (prev - c) * rate
+        lag += (k_lag * speed - lag) / (tau * rate)
+        meas = c + lag
+        if block_deg is not None:
+            meas = max(meas, block_deg)
+        ev = det.update(t, c, meas + rng.normal(0, noise))
+        if ev:
+            return ev, c
+        prev = c
+        t += 1 / rate
+    return None, prev
+
+
+def test_two_speed_close_no_false_contact_when_empty():
+    ev, last = simulate_two_speed(None)
+    assert ev is None and abs(last - sg.floor_deg(P6)) < 1e-6
+
+
+def test_two_speed_close_detects_the_cube_near_its_face():
+    for block in (13.5, 15.0, 16.5):   # 12.6 is too close to the floor for any ramp (held check)
+        ev, cmd = simulate_two_speed(block)
+        assert ev is not None, block
+        assert abs(ev.angle_deg - block) < 0.3
+        _, cmd_single = simulate_two_speed(block, fast=0.0)
+        assert abs(cmd - cmd_single) < 0.3, (block, cmd, cmd_single)   # as early as the slow ramp alone
+
+
+def hermite(p0, v0, p1, v1, T, s):
+    """Cubic Hermite position at s in [0, T] (what joint_trajectory_controller interpolates)."""
+    x = s / T
+    h00, h10, h01, h11 = 2 * x**3 - 3 * x**2 + 1, x**3 - 2 * x**2 + x, -2 * x**3 + 3 * x**2, x**3 - x**2
+    return h00 * p0 + h10 * T * v0 + h01 * p1 + h11 * T * v1
+
+
+def test_ramp_trajectory_cubic_never_below_the_floor_and_slow_in_the_window():
+    floor = sg.floor_deg(P6)
+    top = EXPECTED + P6.window_deg
+    for start in (30.0, 22.0, 16.0, 12.0, 11.48, 5.0):
+        for fast in (0.0, 20.0):
+            pts, _ = sg.close_ramp(start, EXPECTED, P6, fast, 3.5)
+            traj = sg.ramp_trajectory(start, pts, P6)
+            assert traj[-1][0] == floor and traj[-1][1] == 0.0
+            assert all(a >= floor for a, _, _ in traj)
+            prev_p, prev_v, prev_t = max(start, floor), 0.0, 0.0
+            last_pos = prev_p
+            for a, v, t in traj:
+                T = t - prev_t
+                assert T > 0
+                for s in np.linspace(0, T, 60):
+                    pos = hermite(prev_p, prev_v, a, v, T, s)
+                    assert pos >= floor - 1e-9, (start, fast, pos)
+                    assert pos <= last_pos + 1e-9            # closing only, never back open
+                    if last_pos <= top and s > 0:
+                        assert (last_pos - pos) / (T / 59) <= 6.0 * 1.01, (start, fast, last_pos, pos)
+                    last_pos = pos
+                prev_p, prev_v, prev_t = a, v, t
+
+
+def test_fast_part_does_not_train_the_baseline():
+    """Samples commanded above baseline_below_deg are not in the running baseline."""
+    det = sg.ContactDetector(P6, baseline_below_deg=20.0)
+    for k in range(100):
+        det.update(k * 0.01, 25.0 - k * 0.04, 25.0 - k * 0.04 + 2.0)   # trailing 2 deg, above 20
+    assert len(det.hist) == 0
+    det.update(1.0, 19.0, 19.5)
+    assert len(det.hist) == 1
