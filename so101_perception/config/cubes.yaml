@@ -1,0 +1,7 @@
+# ArUco cubes for cube_detector_node.py (and cube_detection.load_cube_geometry).
+# edge: cube edge, marker: side of the black marker square, metres.
+# Ruler check 2026-11-22 (~0.5 mm precision): edge 30 mm, marker 22 mm, both nominal.
+# A cube that differs gets its own entry under `cubes`, with only the values that differ.
+default: {edge: 0.030, marker: 0.022}
+cubes: {}
+#  3: {edge: 0.0305}
