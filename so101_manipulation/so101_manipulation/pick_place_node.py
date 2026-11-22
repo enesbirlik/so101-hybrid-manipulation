@@ -691,6 +691,7 @@ class PickPlaceNode(Node):
         res = gh.get_result_async()
         last = time.monotonic()
         ev = None
+        done_at = None
         deadline = last + dur + 3.0
         while ev is None and time.monotonic() < deadline:
             if self.motion.cancel_check():
@@ -702,8 +703,13 @@ class PickPlaceNode(Node):
                 ev = det.update(s.t, ref, sg.simulated_measurement(ref, fb, p.sim_contact_deg), self.motion.gripper_load())
                 if ev:
                     break
-            if ev is None and res.done() and time.monotonic() - last > 0.3:
-                break
+            # the ramp is over: 0.3 s more of samples for a late contact, then judge the grip
+            # (the controller state never stops coming, so "no sample for 0.3 s" never happened:
+            # every close without contact used to run into the deadline, 3 s later)
+            if ev is None and res.done():
+                done_at = done_at or time.monotonic()
+                if time.monotonic() - done_at > 0.3:
+                    break
             time.sleep(0.005)
         hold = end
         if ev is not None:

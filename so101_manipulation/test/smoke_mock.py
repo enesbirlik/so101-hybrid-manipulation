@@ -271,14 +271,21 @@ def main():
     def cancel():
         st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2"), cancel_after_phase="approach")
         assert st == S.STATUS_CANCELED, f"status {st}: {r.message}"
+        # a cancel in the middle of a move may coast a little (the controller's stop), then holds
+        q0 = dict(d.js)
+        t0 = time.time()
+        while time.time() - t0 < 0.5:
+            rclpy.spin_once(d, timeout_sec=0.05)
         q1 = dict(d.js)
+        coast = max(abs(q1[k] - q0[k]) for k in q0)
         t0 = time.time()
         while time.time() - t0 < 1.0:
             rclpy.spin_once(d, timeout_sec=0.05)
         moved = max(abs(d.js[k] - q1[k]) for k in q1)
         who = max(q1, key=lambda k: abs(d.js[k] - q1[k]))
-        assert moved < 0.01, f"arm still moving after cancel ({who} {math.degrees(moved):.1f} deg)"
-        return True, r.message
+        assert coast < math.radians(3.0), f"arm went on after cancel ({math.degrees(coast):.1f} deg)"
+        assert moved < 0.01, f"arm still moving 0.5 s after cancel ({who} {math.degrees(moved):.1f} deg)"
+        return True, f"{r.message} (coast {math.degrees(coast):.1f} deg)"
 
     base = {"x": 0.22, "y": 0.03, "yaw_deg": 20.0}
     # the fallback path: per-frame /cubes/detections only, the node's own median window
