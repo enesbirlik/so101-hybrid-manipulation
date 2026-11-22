@@ -41,6 +41,9 @@ ros2 launch so101_manipulation pick_place.launch.py fake_cube:=true fake_x:=0.22
 | `/cube_pick_place/open_gripper` | `std_srvs/Trigger` | open slowly where the arm is (the only "let go" besides PlaceCube) |
 | `/cube_pick_place/overview` | `std_srvs/Trigger` | move to the overview pose, look at the table, answer with the cubes seen (JSON, below) |
 | `/cube_pick_place/state` | `std_msgs/String`, transient local (latched), reliable, depth 1 | node state as JSON (below), on every change and at 1 Hz |
+| `/cube_pick_place/reach` | `std_msgs/Float32MultiArray`, transient local (latched), depth 1 | reach table for the dashboard, one row per pan: `[pan_deg, near_m, far_m, near_all_m, far_all_m]` (below) |
+
+**`/cube_pick_place/reach`**: published once at start-up from `config/reach.yaml` (`reach_file`), which `python3 -m so101_manipulation.reach_map --out DIR --yaml config/reach.yaml` computes offline with this planner (radius from base_link's origin, pans and cube yaws in base_link). `layout.dim[0]` = rows (label `pan`), `layout.dim[1]` = 5 columns (label lists them). `near_m` / `far_m`: the closest / farthest radius at which SOME tested cube yaw can be grasped (the band between them is contiguous at the 1 cm scan step); `near_all_m` / `far_all_m`: where EVERY tested yaw (0, 15, 30, 45 deg) can. NaN = nothing at that pan. The node warns when the table was computed with another `max_tilt_deg`, `max_close_elev_deg` or `roll_limit_deg`. Between the pans, interpolate; outside ±60 deg nothing was computed.
 
 **`/cube_pick_place/overview`** (`std_srvs/Trigger`, empty request). Rejected at once (`success: false`, `{"error": "busy with a pick/place goal", "cubes": []}`) while a goal or service runs. Otherwise: jaws to `search_gripper_deg` (unless a cube is held: the grip stays and the cube counts in the clearance), a clearance-checked transit to each pose of `overview_poses_deg` (via a raised pose if needed), then a wait until `overview_min_frames` frames were processed after the arm stopped (+`obs_settle_s`) and every cube seen is stable, at most `overview_wait_s`. `success` = moved and saw frames from the detector. `message` is JSON:
 
@@ -80,7 +83,7 @@ Custom actions because no standard type fits a "pick cube k" goal with these pha
 4. **descend**: torque limit lowered (and confirmed) at the hover; the hover trim takes the servos' static error out and is reused below (short passes: measure after `trim_settle_s`, apply the whole error in one `trim_move_s` move, a second pass only if still beyond `trim_tol_deg`); then one continuous move down to the grasp height through the `descend_step` points; contact stop when the `contact_joint` lag (reference − feedback) rises more than `descend_contact_lag_deg` over the hover baseline: back up to the hover and abort.
 5. **grasp**: the soft grasp (below).
 6. **verify**: held / empty / uncertain from the jaw angle and current. Not held: open slowly, rise to the hover, abort.
-7. **lift**: straight back up to the hover in one continuous move through the descent points (with the hover trim's bias, no stop at each point), judge the grip again (lost: abort, gripper left as it is).
+7. **lift**: back to the hover in one continuous move through the descent points (with the hover trim's bias, no stop at each point); for a tilted grasp that is back out ALONG THE JAW AXIS first, then straight up to the exit pose (`GraspPlan.retreat_poses`); judge the grip again (lost: abort, gripper left as it is). A miss at the bottom (back off) and a contact stop on the way down retreat along the same line.
 
 **PlaceCube**: **carry** (transit to the hover over the target, the carried cube counted in the clearance), **refine** (stacking only: close-up of the lower cube), **descend** (contact stop = the cube is down), **release** (open slowly, then restore the torque limit), **retreat** (back up to the hover, one continuous move with the trim bias). Stacking aligns the closing direction with the lower cube's faces and puts the release at its top.
 
@@ -122,7 +125,29 @@ Every pick and place times its phases (`timing.PhaseTimer`; a retried phase adds
 
 - `gripper_frame_link` is the **fixed** jaw tip. At 30° open the gap midpoint is ~3 cm beside it, so the IK puts the point `gap_fraction` of the way from the fixed to the moving jaw tip (moving jaw tip = the mesh vertex farthest from its joint) over the cube centre, and the fixed tip at the grasp height.
 - The jaws close along a face normal: 4 options (`yaw + k·90°`). Options whose wrist roll would be beyond `roll_limit_deg` are dropped (the camera cable tore at −124°); the rest are solved (hover, every descent step, grasp, with the same closing direction) and the one with a good IK and the smallest |roll| wins.
-- Vertical jaws reach ~30 cm out. Beyond, a tilted approach up to `max_tilt_deg` (`allow_tilt`), else a clear "reach" message. The hover is lowered from `hover_height` towards `hover_min_height` when needed. A cube on another cube is grasped relative to its own bottom.
+- Vertical jaws reach ~14-30 cm out. Elsewhere (`allow_tilt`) the **tilt sweep** (below), else a clear "reach" message. The hover is lowered from `hover_height` towards `hover_min_height` when needed. A cube on another cube is grasped relative to its own bottom.
+- **Tilt sweep** (`plan_tilted`, replaces the weighted "tilted" pass that preferred missing the cube by 2-4 cm over leaning more than ~3.5°). The 5-DOF arm keeps the jaw axis in its own vertical plane, so the jaws can only LEAN in that plane: tips away from the base for far cubes (the approach comes from the robot's side), towards the base for near ones. Leans `±tilt_step_deg, ±2·step, …` up to `max_tilt_deg`, smallest first; for each lean and closing option one exact solve of 5 equations in 5 joints: grasp point (3, hard, `ik_tolerance_mm`), lean (1, hard), closing direction along the face normal (1, soft within `close_tol` 3°, because |wrist_roll| ≤ 90° can leave it 1-2° short). The first lean with a full plan wins; among its options the smallest |roll| and the most horizontal closing direction. `max_close_elev_deg` bounds how far the closing direction may tip out of the horizontal (a jaw closing along the leaning plane meets the cube's vertical faces at that angle).
+- Grasp point of a tilted grasp: the gap point lies on the jaw axis through the cube centre at **mid-height**, `d` beyond it, with `d` such that vertical jaws would put it where the vertical planner does: the pads stay centred on the cube's mid-height as the jaws lean. If the lowest point of the hand (table model, moving jaw included) is below `min_final_clearance_mm`, the grasp point rises in 2 mm steps (≤ 6 mm). The gap-midpoint correction is the same 3-D point in `gripper_link`, so it is exact in the tilted frame.
+- Approach of a tilted grasp: the hover is `hover_height − grasp_tip_height` back **along the jaw axis** from the grasp point, and the descent follows that line (the jaws slide onto the cube); if that line runs out of the workspace (near the base wrist_flex is at its limit) the descent goes straight down with the jaws leaning. Lift: back along the line to the hover, then up to an exit pose (the height the leaning line gave away + 2 cm, if reachable).
+- Contact on the way down: `contact_watch` takes the joint a push against the descent line deflects most (`J_k · line` at the grasp pose; the lag of joint k is proportional to it). That is shoulder_lift with a positive lag for every grasp checked, vertical or leaning to 45°, so the existing threshold applies; `tilt_contact_joint` overrides it for tilted grasps.
+- A **tilted hold is placed with the same lean and wrist_roll** (`plan_place_held`: the only hand orientations that keep the cube flat are the grasp's turned about the vertical), straight down onto the target or, far out, along the jaw axis. The arm reaches that orientation only in a band of radii, so if the cube cannot go down flat the lean moves towards vertical in 5° steps, at most `PLACE_MAX_TILT_DEG` (10°): the cube then lands on one bottom edge (released with that edge `release_gap` above the surface) and settles flat when let go; the plan summary says so. Measured offline: a cube picked at 40 cm (30° lean) can be put down at 18-30 cm (flat at 22 and 30 cm, 5° elsewhere); one picked at 12 cm (10° inward lean) only at ~20-25 cm. Yaw and stacking alignment are not chosen for a tilted hold (they follow from the pan). Outside the band the place fails in `carry` with the reason.
+
+**Reach** (`config/reach.yaml`, 2026-11-22: 30 mm cube, 30° open, max lean 45°, step 5°, closing ≤ 20° off horizontal, |roll| ≤ 90°; cube yaws 0/15/30/45° in base_link; radius from base_link's origin, 1 cm steps). Before the tilt sweep: 14-30 cm at pan 0, 12-30 cm at ±60°.
+
+| pan | near (some yaw) | far (some yaw) | near (all yaws) | far (all yaws) |
+|---|---|---|---|---|
+| −60 | 8 | 41 | 11 | 39 |
+| −45 | 9 | 42 | 12 | 37 |
+| −30 | 10 | 43 | 13 | 38 |
+| −15 | 10 | 43 | 12 | 38 |
+| 0 | 11 | 43 | 14 | 38 |
+| +15 | 11 | 43 | 13 | 40 |
+| +30 | 10 | 43 | 13 | 39 |
+| +45 | 9 | 42 | 11 | 37 |
+| +60 | 9 | 41 | 11 | 36 |
+
+At the far end the jaws lean the full 45°. What stops it: for a cube whose face normal is within ~20° of the radial direction, the arm's length (at 44 cm the IK misses by 3-5 mm; a 60° lean would add ~1 cm, to 44 cm, nothing reaches 46+); for other yaws, the closing direction: the jaws can only lean in the arm's plane, so a cube turned 25-45° to the radial direction is gripped with the closing direction tipped out of the horizontal by asin(sin(yaw)·sin(lean)) > 20°, and the two other closing options need wrist_roll ±135° (camera cable). At pan 0: any yaw up to 37-38 cm, at 40 cm yaws within ±25° of radial, at 42 cm within ±20°. At the near end shoulder_lift is at its limit (−97°) and wrist_flex at 95°, with an inward lean of 10-20°.
+
 - The vertical residual leaves ~2° of tilt: the wrist_roll joint axis is ~2.8° off the jaw direction in the URDF, and a 5-DOF arm cannot cancel that while also fixing the closing direction.
 
 ## Soft grasp (`soft_grasp.py`)
@@ -159,7 +184,7 @@ Mock hardware has no contact and no deadband: without `sim_contact_deg` a pick e
 cd so101_manipulation && python3 -m pytest -q test          # no ROS graph needed: geometry, soft grasp, close ramp, search views, overview coverage, adapter, timing, torque hook, params
 export ROS_DOMAIN_ID=42                                       # mock integration test, see its docstring
 ros2 launch so101_moveit_config demo.launch.py rviz:=false &
-python3 test/smoke_mock.py                                    # miss, pick_place, search, reach, cancel, overview, memory
+python3 test/smoke_mock.py                                    # miss, pick_place, search, reach, cancel, overview, memory, far, far40, near, near11
 ```
 
 `test/smoke_mock.py` starts its own FAKE cube publisher (`fake_cube_publisher`: `/cubes/detections` and `/cubes/tracked`, frames ignored (not published) while the arm moves, optional field-of-view cone, `fov_check` through the fisheye model, far-view bias) and node per scenario, and refuses to run on domain 0 or on real hardware.
@@ -172,6 +197,8 @@ python3 test/smoke_mock.py                                    # miss, pick_place
 | `so101_manipulation/grasp.py` | grasp IK, closing options, reach, view poses, fisheye visibility / coverage, overview and aimed views, search order |
 | `so101_manipulation/soft_grasp.py` | floor, contact detector, two-speed close ramp, hold target, held / empty |
 | `so101_manipulation/timing.py` | per-phase timer |
+| `so101_manipulation/reach_map.py` | offline reach map with the planner (`python3 -m so101_manipulation.reach_map`), the `~/reach` publisher |
+| `config/reach.yaml` | the reach table `~/reach` publishes |
 | `so101_manipulation/kinematics.py` | FK from the URDF + `so101_kinematics.yaml`, mesh hulls, table clearance (no ROS) |
 | `so101_manipulation/motion.py` | trajectories to the controllers, limit and floor checks, lag / current / torque-limit state |
 | `so101_manipulation/cube_tracker.py` | perception adapter |
@@ -180,6 +207,8 @@ python3 test/smoke_mock.py                                    # miss, pick_place
 | `config/pick_place.yaml` | every parameter with its default (kept equal to `PARAMS` by `test/test_params.py`) |
 
 ## Open points (real arm)
+
+- **Tilted grasps (2026-11-22) have run on mock only.** Unknown on the real arm: the servo sag with the arm stretched to 40+ cm (the hover trim corrects it at the hover, the descent reuses the bias), whether the shoulder_lift lag still shows a jaw landing on a paper cube when the descent is mostly horizontal, how a paper cube behaves when the jaw pads meet it at up to `max_close_elev_deg` (20°) out of the horizontal, the camera's close-up view from a leaning hover, and placing a tilted hold. Start with `hover_only` picks at 34-38 cm.
 
 - `grasp_tip_height` 11 mm with `table_z` known to ~2.4 mm rms: the moving jaw hangs ~6 mm lower than the fixed tip at 30° open (lowest point ~4.7 mm above the table in the model).
 - The descent contact thresholds come from the toy grasp; a paper cube may give a weaker shoulder_lift lag when a jaw lands on it.
@@ -238,8 +267,12 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 | `hover_min_height` | `0.05` | lowest hover tried when the hover is out of reach |
 | `descend_step` | `0.01` | height step of the descent |
 | `gap_fraction` | `0.5` | where the cube centre goes between the fixed (0) and moving (1) jaw tip; 0.5 = gap midpoint |
-| `allow_tilt` | `true` | allow a tilted approach (<= max_tilt_deg) beyond vertical reach |
-| `max_tilt_deg` | `15.0` | largest jaw tilt of the fallback |
+| `allow_tilt` | `true` | allow a tilted approach (<= max_tilt_deg) where vertical jaws do not reach |
+| `max_tilt_deg` | `45.0` | largest jaw lean of the tilt sweep (far cubes lean out, near cubes lean in) |
+| `tilt_step_deg` | `5.0` | lean step of the tilt sweep; the smallest lean that works is used |
+| `max_close_elev_deg` | `20.0` | tilt sweep: closing direction at most this far off horizontal (jaw pads vs the cube's vertical faces) |
+| `tilt_contact_joint` | `auto` | contact joint for TILTED grasps: 'auto' = the joint a push against the jaw axis deflects most (Jacobian), or a joint name; vertical grasps use contact_joint |
+| `reach_file` | `""` | reach table published on ~/reach (python3 -m so101_manipulation.reach_map); '' = config/reach.yaml of this package |
 | `vertical_tol_deg` | `3.0` | jaws count as vertical within this |
 | `ik_tolerance_mm` | `2.0` | largest IK position error accepted |
 | `roll_limit_deg` | `90.0` | /wrist_roll/ never beyond this (camera cable) |
