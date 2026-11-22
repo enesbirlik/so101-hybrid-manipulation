@@ -512,6 +512,8 @@ def _fit_cube(k, items, R_wc, t_wc, zc, prm):
     best = None
     for yaw0 in hyps:
         for faces in _assignments(items, yaw0, np.radians(prm.assign_deg), t_wc):
+            if not faces:
+                continue
             free = _initial_centre(faces, yaw0, None, t_wc)
             z = zc if zc is not None and abs(free[2] - zc) < prm.snap_window else None
             c0 = _initial_centre(faces, yaw0, z, t_wc)
