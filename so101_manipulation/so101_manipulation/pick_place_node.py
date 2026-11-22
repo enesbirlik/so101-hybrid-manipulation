@@ -87,9 +87,7 @@ PARAMS = {
     "refine_required": (False, "abort when the close-up sees no stable cube (else keep the far estimate)"),
     # contact on the way down (arm)
     "contact_joint": ("shoulder_lift", "joint whose lag (reference - feedback) shows a contact"),
-    "descend_contact_lag_deg": (3.0, "lag above the hover baseline after a step = contact (safety net)"),
-    "descend_step_lag_deg": (1.0, "lag rise over the previous descent step = contact"),
-    "motion_contact_lag_deg": (4.0, "lag above the previous step's during a step = contact"),
+    "descend_contact_lag_deg": (2.0, "lag above the hover baseline during the descent = contact"),
     "descend_lag_samples": (15, "controller states averaged after each step"),
     # soft grasp (gripper)
     "close_speed_deg_s": (6.0, "closing ramp speed"),
@@ -424,8 +422,9 @@ class PickPlaceNode(Node):
         return est, plan, total
 
     def descend(self, plan, grip_deg, stop_on_contact_ok=False):
-        """Step down through plan.descent with a contact stop. Returns the index reached; raises on
-        contact unless stop_on_contact_ok (place: contact = the cube is down)."""
+        """One continuous move down through plan.descent with a contact stop. Returns the index of the
+        descent point nearest to where the hand ended; raises on contact unless stop_on_contact_ok
+        (place: contact = the cube is down)."""
         p = self.p
         j = p.contact_joint
         # at the hover, in free space: take out the servos' static error, and reuse it below
@@ -433,33 +432,37 @@ class PickPlaceNode(Node):
         self.feedback("descend", "hover trim " + ", ".join(f"{n.split('_')[1]} {math.degrees(b):+.1f}"
                                                          for n, b in zip(ARM, self.arm_bias) if abs(b) > 1e-4))
         base = self.motion.mean_lag(j, int(p.descend_lag_samples))
-        # Gravity on the arm changes as it goes down, so the lag drifts slowly (~0.5 deg per cm,
-        # 1.9 deg over 5 cm on 2026-11-22 with nothing touched). A jaw landing on something makes it
-        # jump within one step: compare each step with the previous one; the hover baseline stays as a
-        # wide safety net.
-        step_base = base
+        # Gravity alone drifts the lag slowly as the arm goes down (+1.1 deg over 6 cm at servo P 32,
+        # 2026-11-22); a jaw landing on something lifts it at once. One move instead of 1 cm steps
+        # (stop, settle, measure: ~8 s and stick-slip at every start).
+        peak = [0.0]
 
         def monitor(samples):
-            return any(math.degrees(s.ref[j] - s.fb[j]) - step_base > p.motion_contact_lag_deg for s in samples)
-        prev = plan.hover.q
-        for i, (h, r) in enumerate(zip(plan.heights, plan.descent)):
-            res = self.motion.run("arm", [r.q], p.descend_speed, monitor=monitor, bias=self.arm_bias)
-            now = self.motion.mean_lag(j, int(p.descend_lag_samples))
-            step, lag = now - step_base, now - base
-            self.feedback("descend", f"tip {h * 100:.1f} cm, {j} lag {step:+.2f} over the last step, {lag:+.2f} over the hover")
-            if res.stopped or step > p.descend_step_lag_deg or lag > p.descend_contact_lag_deg:
-                msg = (f"contact at {h * 100:.1f} cm ({j} lag {step:+.1f} deg over the last step, "
-                       f"{lag:+.1f} over the hover)")
-                if stop_on_contact_ok:
-                    self.feedback("descend", msg + ": stopping here")
-                    return i
-                self.feedback("descend", msg + ": backing up")
-                self.motion.run("arm", [prev], p.lift_speed, bias=self.arm_bias)
-                raise Fail("descend", f"something under the jaws: {msg}")
-            if not res.ok:
-                raise Fail("descend", f"arm move failed: {res.error}")
-            prev = r.q
-            step_base = now
+            for s_ in samples:
+                ex = math.degrees(s_.ref[j] - s_.fb[j]) - base
+                peak[0] = max(peak[0], ex)
+                if ex > p.descend_contact_lag_deg:
+                    return True
+            return False
+        pts = [r.q for r in plan.descent]
+        span = float(np.max(np.abs(np.asarray(pts[-1]) - np.asarray(plan.hover.q))))
+        total = max(self.motion.min_move_s, span / max(1e-3, p.descend_speed))
+        times = [total * (k + 1) / len(pts) for k in range(len(pts))]
+        self.feedback("descend", f"down to {plan.heights[-1] * 100:.1f} cm in {total:.1f} s")
+        res = self.motion.run("arm", pts, times=times, monitor=monitor, bias=self.arm_bias, through=True)
+        h_now = float(self.model.tip(np.asarray(self.motion.q_arm()))[2] - self.model.table_z)
+        i = int(np.argmin([abs(h - h_now) for h in plan.heights]))
+        if res.stopped:
+            msg = f"contact at {h_now * 100:.1f} cm ({j} lag {peak[0]:+.1f} deg over the hover)"
+            if stop_on_contact_ok:
+                self.feedback("descend", msg + ": stopping here")
+                return i
+            self.feedback("descend", msg + ": backing up")
+            self.motion.run("arm", [plan.hover.q], p.lift_speed, bias=self.arm_bias)
+            raise Fail("descend", f"something under the jaws: {msg}")
+        if not res.ok:
+            raise Fail("descend", f"arm move failed: {res.error}")
+        self.feedback("descend", f"down at {h_now * 100:.1f} cm, {j} lag peak {peak[0]:+.2f} deg over the hover")
         return len(plan.descent) - 1
 
     def soft_close(self):

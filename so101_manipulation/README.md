@@ -53,7 +53,7 @@ Custom actions because no standard type fits a "pick cube k" goal with these pha
 1. **search**: wait `search_initial_wait_s` for a stable estimate where the arm is; else sweep the view poses (autograb's: *near* camera ~20 cm above the table, *close* 17 cm out, *far* 33 cm out, each at `search_pans_deg`), sorted by how close the camera axis points to where the cube was last seen. The jaws go to `search_gripper_deg` (never below the floor).
 2. **approach**: plan the grasp (below), open to `open_deg`, transit to the hover pose.
 3. **refine**: at the hover, wait for a fresh stable estimate (observations only count from `obs_settle_s` after the arm stopped), re-target when it moved > `refine_min_shift_mm`, at most `refine_max_iter` times; abort beyond `refine_max_shift_mm`. Any face of the cube counts (the 2026-11-21 script skipped the refinement when the close-up saw a different part of the object); the yaw is compared modulo 90°.
-4. **descend**: torque limit lowered (and confirmed) at the hover, then down in `descend_step` steps; contact stop on `contact_joint` lag (reference − feedback, over the hover baseline) > `descend_contact_lag_deg` after a step or > `motion_contact_lag_deg` during one: back up one step and abort.
+4. **descend**: torque limit lowered (and confirmed) at the hover; the hover trim takes the servos' static error out and is reused below; then one continuous move down to the grasp height through the `descend_step` points; contact stop when the `contact_joint` lag (reference − feedback) rises more than `descend_contact_lag_deg` over the hover baseline: back up to the hover and abort.
 5. **grasp**: the soft grasp (below).
 6. **verify**: held / empty / uncertain from the jaw angle and current. Not held: open slowly, rise to the hover, abort.
 7. **lift**: straight back up to the hover, judge the grip again (lost: abort, gripper left as it is).
@@ -177,6 +177,9 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 | Parameter | Default | Meaning |
 |---|---|---|
 | `refine_max_iter` | `2` | close-up refinements at the hover |
+| `trim_tol_deg` | `0.3` | hover trim: stop when every measured arm joint is within this of the plan |
+| `trim_max_iter` | `3` | hover trim: correction moves at most |
+| `trim_max_bias_deg` | `5.0` | hover trim: largest correction added to a joint command |
 | `refine_min_shift_mm` | `2.0` | re-target when the close-up estimate moved more than this |
 | `refine_max_shift_mm` | `40.0` | abort when the close-up estimate moved more than this |
 | `refine_timeout_s` | `3.0` | wait this long for a stable close-up estimate |
@@ -187,15 +190,14 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 | Parameter | Default | Meaning |
 |---|---|---|
 | `contact_joint` | `shoulder_lift` | joint whose lag (reference - feedback) shows a contact |
-| `descend_contact_lag_deg` | `1.5` | lag above the hover baseline after a step = contact |
-| `motion_contact_lag_deg` | `4.0` | lag above the hover baseline during a step = contact |
+| `descend_contact_lag_deg` | `2.0` | lag above the hover baseline during the descent = contact |
 | `descend_lag_samples` | `15` | controller states averaged after each step |
 
 **Soft grasp (gripper)**
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `close_speed_deg_s` | `12.0` | closing ramp speed |
+| `close_speed_deg_s` | `6.0` | closing ramp speed |
 | `open_speed_deg_s` | `20.0` | opening speed (release, abort) |
 | `contact_lag_deg` | `1.0` | contact when measured - commanded (= -(controller lag), positive when blocked) is this far above its free-closing baseline |
 | `contact_samples` | `3` | consecutive samples over the threshold |
@@ -232,10 +234,10 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `transit_speed` | `0.6` | rad/s, transit |
-| `approach_speed` | `0.3` | rad/s, re-targeting at the hover |
-| `descend_speed` | `0.12` | rad/s, descent steps |
-| `lift_speed` | `0.2` | rad/s, lift / retreat |
+| `transit_speed` | `0.9` | rad/s, transit |
+| `approach_speed` | `0.45` | rad/s, re-targeting at the hover |
+| `descend_speed` | `0.2` | rad/s, descent steps |
+| `lift_speed` | `0.3` | rad/s, lift / retreat |
 | `min_move_s` | `0.8` | shortest move |
 | `settle_s` | `0.3` | pause after each move |
 | `transit_clearance_mm` | `45.0` | lowest point (arm, camera, carried cube) above the table on transits; cubes are 30 mm tall |

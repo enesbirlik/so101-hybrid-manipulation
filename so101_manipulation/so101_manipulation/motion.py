@@ -187,7 +187,9 @@ class Motion:
             prev = p
         return out
 
-    def send_async(self, ctrl, points, times):
+    def send_async(self, ctrl, points, times, through=False):
+        """`through`: no velocities on the inner points, so the controller passes them without stopping
+        (the last point still ends at rest)."""
         if ctrl == "gripper":
             # HARD RULE: no gripper command below the cube width (minus a small squeeze)
             points, clamped = clamp_gripper_points(points, self.gripper_floor)
@@ -197,8 +199,10 @@ class Motion:
         self.validate(ctrl, points)
         g = FollowJointTrajectory.Goal()
         g.trajectory.joint_names = list(self.joints[ctrl])
-        for p, t in zip(points, times):
-            pt = JointTrajectoryPoint(positions=[float(v) for v in p], velocities=[0.0] * len(p))
+        for k, (p, t) in enumerate(zip(points, times)):
+            last = k == len(points) - 1
+            pt = JointTrajectoryPoint(positions=[float(v) for v in p],
+                                      velocities=[0.0] * len(p) if (last or not through) else [])
             pt.time_from_start = duration(t)
             g.trajectory.points.append(pt)
         client = self.clients[ctrl]
@@ -238,7 +242,8 @@ class Motion:
                 break
         return bias
 
-    def run(self, ctrl, points, speed=None, times=None, monitor=None, settle=True, bias=None) -> MotionResult:
+    def run(self, ctrl, points, speed=None, times=None, monitor=None, settle=True, bias=None,
+            through=False) -> MotionResult:
         """Send and wait; `monitor(samples)` -> True stops the motion (goal canceled: the controller
         holds where the joints are). Raises Canceled when the action goal is canceled. `bias` (arm
         only, from trim_arm) is added to every point."""
@@ -248,7 +253,7 @@ class Motion:
         if times is None:
             times = self.timed(ctrl, points, speed)
         t0 = time.monotonic()
-        gh = self.send_async(ctrl, points, times)
+        gh = self.send_async(ctrl, points, times, through=through)
         res_fut = gh.get_result_async()
         last = t0
         deadline = t0 + times[-1] + 10.0
