@@ -74,6 +74,7 @@ OUTLIER_FLOOR_MM = 5.0   # times the median (and this much) are dropped once
 AUTO_SPREAD_DEG = {"shoulder_pan": 15, "shoulder_lift": 10, "elbow_flex": 10, "wrist_flex": 25, "wrist_roll": 45}
 APPROACH_DEG = 3.0       # each pose is reached once from above and once from below
 RANGE_MARGIN_DEG = 5.0   # stay this far inside the calibrated range
+MAX_ROLL_DEG = 90.0      # |wrist_roll| limit: the camera cable tore at -124 deg once
 MIN_HEIGHT = 0.05        # m; gripper_link and gripper_frame_link stay this high above base_link
 SETTLE_S = 1.0           # wait after arriving, before the still check and the frame
 MIN_VISIBLE = 0.7        # predicted share of board corners inside the image
@@ -153,15 +154,15 @@ def origin_transform(joint):
                      [float(v) for v in o.get("xyz", "0 0 0").split()])
 
 
-def load_kinematics(path=KINEMATICS_FILE):
+def load_kinematics(path=None):
     """Calibrated joint origins of the URDF: {joint: {xyz, rpy, cad: {xyz, rpy}}}."""
-    with open(path) as f:
+    with open(path or KINEMATICS_FILE) as f:
         return yaml.safe_load(f)["joints"]
 
 
-def load_table_z(path=KINEMATICS_FILE):
+def load_table_z(path=None):
     """The table surface in base_link [m] for the calibrated origins, or None if not measured."""
-    with open(path) as f:
+    with open(path or KINEMATICS_FILE) as f:
         return yaml.safe_load(f).get("table_z")
 
 
@@ -371,6 +372,8 @@ def pose_problem(q_deg, cal, chains):
         lo, hi = sorted((to_deg(cal[n]["range_min"], cal[n]), to_deg(cal[n]["range_max"], cal[n])))
         if not lo + RANGE_MARGIN_DEG <= v <= hi - RANGE_MARGIN_DEG:
             return f"{n} {v:+.0f} deg is outside its range"
+    if abs(q_deg.get("wrist_roll", 0.0)) > MAX_ROLL_DEG:
+        return f"wrist_roll {q_deg['wrist_roll']:+.0f} deg would strain the camera cable"
     q = {n: np.radians(v) for n, v in q_deg.items()}
     if min(forward(c, q)[2, 3] for c in chains) < MIN_HEIGHT:
         return "too close to the table"
@@ -529,7 +532,16 @@ def cmd_auto(args):
                 # Aim at the board seen in the earlier runs, then measure it again from the centre.
                 T_bt = board_from_samples(args.samples, cal, chain, T_gc, board, dictionary, board_points, K, D)
                 if T_bt is None:
-                    sys.exit(f"--side aims at the board seen in {args.samples}: run one auto with a taught centre first")
+                    # A fresh folder: measure the board once from where the arm stands now (torque
+                    # not touched). Good to a few mm with the current hand-eye, enough to aim.
+                    frame, ticks = grab_still(bus, cap, cal, names)
+                    corners, ids = cam.detect(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), board, dictionary) \
+                        if frame is not None else (None, None)
+                    if ids is None or len(ids) < MIN_CORNERS:
+                        sys.exit(f"--side aims at the board seen in {args.samples} or from the present pose: "
+                                 "neither sees it, run one auto with a taught centre first")
+                    T_bt = forward(chain, to_rad(ticks, cal)) @ T_gc @ board_pose(corners, ids, board_points, K, D)[0]
+                    print(f"board seen from the present pose, {len(ids)} corners")
                 centre = side_centre(T_bt, args.side, cal, chain, T_gc, board_points, K, D, allowed,
                                      np.random.default_rng(args.seed))
                 if centre is None:
@@ -987,6 +999,7 @@ def cmd_kinematics(args):
 
 
 def main():
+    global KINEMATICS_FILE
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", help="serial port (default: the single /dev/serial/by-id/usb-1a86_* adapter)")
     parser.add_argument("--device", default=cam.DEFAULT_DEVICE, help="V4L2 device (default: the wrist camera)")
@@ -994,6 +1007,8 @@ def main():
     parser.add_argument("--file", type=Path, default=DEFAULT_FILE, help=f"result YAML (default: {DEFAULT_FILE})")
     parser.add_argument("--joint-file", type=Path, default=JOINT_FILE, help="joint calibration file")
     parser.add_argument("--intrinsics", type=Path, default=cam.DEFAULT_FILE, help="camera intrinsics YAML")
+    parser.add_argument("--kinematics", type=Path, default=KINEMATICS_FILE,
+                        help="joint origins (and table_z) to read; kinematics --write saves here (default: the repo file)")
     parser.add_argument("--square-mm", type=float, default=24.0, help="measured printed square side (default: 24)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     capture = sub.add_parser("capture")
@@ -1016,8 +1031,9 @@ def main():
     kinematics.add_argument("--board-on-table", dest="free_board", action="store_false",
                             help="pin each board on the table (z = BOARD_Z) instead of a free pose; worse so far (7.1 vs 2.7 px)")
     kinematics.add_argument("--write", action="store_true",
-                            help=f"save the joint origins to {KINEMATICS_FILE.name} and the camera pose to --file")
+                            help="save the joint origins to --kinematics and the camera pose to --file")
     args = parser.parse_args()
+    KINEMATICS_FILE = args.kinematics
     {"capture": cmd_capture, "auto": cmd_auto, "solve": cmd_solve, "kinematics": cmd_kinematics}[args.cmd](args)
 
 
