@@ -304,7 +304,7 @@ def main():
         assert st == S.STATUS_SUCCEEDED, f"pick status {st}: {r.message}"
         lean = [t for t in d.details if "lean" in t and "inward" in t]
         assert lean and abs(r.wrist_roll_deg) <= 90, d.details
-        st2, r2, ph2 = d.call(d.place, PlaceCube.Goal(x=0.20, y=0.0, on_cube_id="", yaw_deg=float("nan")))
+        st2, r2, ph2 = d.call(d.place, PlaceCube.Goal(x=0.22, y=0.0, on_cube_id="", yaw_deg=float("nan")))
         assert st2 == S.STATUS_SUCCEEDED, f"place status {st2}: {r2.message}"
         return True, f"tilt {r.jaw_tilt_deg:.1f} deg, roll {r.wrist_roll_deg:.0f}: {lean[0]}; place: {r2.message}"
 

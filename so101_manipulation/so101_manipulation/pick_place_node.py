@@ -923,7 +923,7 @@ class PickPlaceNode(Node):
                     # follows from the pan (no closing-direction choice)
                     pl, why = self.planner.plan_place_held(
                         xy, surface + self.edge / 2 + p.release_gap, held["cube_in_hand"], held["lean"], held["roll"],
-                        math.radians(grip), p.hover_height - p.grasp_tip_height, p.descend_step)
+                        math.radians(grip), p.hover_height - p.grasp_tip_height, p.descend_step, edge=self.edge)
                     if pl is None:
                         raise Fail("carry", f"no place pose at ({xy[0] * 100:.1f}, {xy[1] * 100:.1f}) cm for a cube "
                                             f"held at {math.degrees(held['lean']):+.0f} deg lean: {why}")

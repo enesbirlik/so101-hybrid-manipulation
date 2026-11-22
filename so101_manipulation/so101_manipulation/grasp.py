@@ -33,6 +33,7 @@ WEIGHT_TILTED = 60.0        # fallback: lets the jaws lean up to ~15 deg out of 
 WEIGHT_CLOSE = 100.0        # per unit of closing-direction error
 WEIGHT_CLOSE_SOFT = 20.0    # tilt sweep: ~1 mm per 3 deg, so a roll at its +-90 deg bound gives way in the
                             # closing direction (checked against close_tol_deg), not in the grasp position
+PLACE_MAX_TILT_DEG = 10.0   # a tilted hold that cannot go down flat may land on an edge, tilted at most this much
 TILT_MAX_RAISE = 0.006      # tilt sweep: the grasp point rises at most this much to keep the table clearance
 ARM_SEEDS = ([0.6, -0.3, 1.4], [1.0, -0.9, 1.6], [0.3, 0.3, 1.2], [0.2, 0.6, 1.0])
 
@@ -93,6 +94,7 @@ class GraspPlan:
     line: np.ndarray | None = None    # unit direction of the descent (base_link); None = straight down
     exit: IKResult | None = None      # lift: after backing out along the line to the hover, straight up to this
     cube_in_hand: np.ndarray | None = None   # cube centre in gripper_link at the grasp (a tilted hold is placed with it)
+    place_tilt_deg: float = 0.0       # plan_place_held: the cube lands this far from flat (0 = flat)
 
     @property
     def grasp(self) -> IKResult:
@@ -127,6 +129,8 @@ class GraspPlan:
                   f"closing {self.grasp.close_elev_deg:+.0f} deg off horizontal)")
         elif self.tilted:
             s += " (tilted fallback)"
+        if self.place_tilt_deg > 0.5:
+            s += f", the cube lands {self.place_tilt_deg:.0f} deg tilted on one edge"
         return s
 
 
@@ -607,11 +611,30 @@ class GraspPlanner:
         return None, "; ".join(why) or "no hover travel"
 
     def plan_place_held(self, target_xy, centre_h, cube_in_hand, lean, roll, grip, hover_rise, step=0.01,
-                        min_clearance=0.0):
+                        min_clearance=0.0, edge=0.03, max_place_tilt_deg=PLACE_MAX_TILT_DEG):
         """Place a cube held by a TILTED grasp with the hand in the same orientation (same lean, same
         wrist_roll: the cube stays flat). The cube centre (`cube_in_hand`) goes over target_xy at
-        `centre_h` above the table; hover `hover_rise` straight above; descent straight down.
-        (GraspPlan, "") or (None, why)."""
+        `centre_h` above the table; hover `hover_rise` above; descent straight down (or along the jaw
+        axis far out). A 5-DOF arm reaches that orientation only in a band of radii (wrist_flex runs
+        into its limit), so if the cube cannot go down flat, the lean moves towards vertical in 5 deg
+        steps by at most `max_place_tilt_deg`: the cube then lands on one bottom edge, tilted by that
+        much (centre raised so the edge is at `centre_h - edge/2`), and settles flat when released.
+        (GraspPlan with place_tilt_deg, "") or (None, why)."""
+        sgn = 1.0 if lean >= 0 else -1.0
+        steps = int(math.floor(min(abs(math.degrees(lean)), max_place_tilt_deg) / 5.0 + 1e-9))
+        why = []
+        for k in range(steps + 1):
+            L = lean - sgn * math.radians(5.0 * k)
+            tilt = abs(lean - L)
+            h = centre_h + edge / 2 * (math.cos(tilt) + math.sin(tilt) - 1.0)
+            plan, w = self._place_at_lean(target_xy, h, cube_in_hand, L, roll, grip, hover_rise, step, min_clearance)
+            if plan is not None:
+                plan.place_tilt_deg = math.degrees(tilt)
+                return plan, ""
+            why.append(f"lean {math.degrees(L):+.0f}: {w}")
+        return None, " | ".join(why[:2] + why[-1:] if len(why) > 3 else why)
+
+    def _place_at_lean(self, target_xy, centre_h, cube_in_hand, lean, roll, grip, hover_rise, step, min_clearance):
         target_xy = np.asarray(target_xy, float)
         pan = self.radial_pan(target_xy)
         z0 = self.m.table_z

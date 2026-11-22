@@ -182,3 +182,30 @@ def test_place_a_tilted_hold_keeps_the_cube_flat(planner, far_plan):
     ch = h[:3, :3] @ far_plan.cube_in_hand + h[:3, 3]
     assert np.linalg.norm(ch[:2] - c[:2]) < 0.003 and ch[2] > c[2] + 0.025
     same(plan.retreat_poses(0), [plan.hover.q])
+    assert plan.place_tilt_deg == 0.0
+
+
+def test_place_tilt_fallback_is_bounded(planner):
+    """A hold that cannot go down flat lands at most PLACE_MAX_TILT_DEG off flat, on one edge."""
+    from so101_manipulation.grasp import PLACE_MAX_TILT_DEG
+    hold, msg = planner.plan_cube((0.40, 0.0), 0.0, OPEN)
+    assert hold is not None, msg
+    grip = math.radians(11.48)
+    n = 0
+    for t in ([0.30, -0.08], [0.25, 0.0], [0.20, 0.0]):
+        plan, why = planner.plan_place_held(np.array(t), EDGE / 2 + 0.002, hold.cube_in_hand, hold.lean, hold.roll,
+                                            grip, 0.059)
+        if plan is None:
+            continue
+        n += 1
+        assert plan.place_tilt_deg <= PLACE_MAX_TILT_DEG + 1e-6
+        assert abs(abs(plan.lean_deg - hold.lean_deg) - plan.place_tilt_deg) < 1e-6
+        Th = planner.m.hand(plan.grasp.q)
+        c = Th[:3, :3] @ hold.cube_in_hand + Th[:3, 3]
+        d = math.radians(plan.place_tilt_deg)
+        # the lowest bottom edge of the tilted cube is at the release height
+        assert abs(c[2] - planner.m.table_z - EDGE / 2 * (math.cos(d) + math.sin(d)) - 0.002) < 0.0025
+    assert n >= 2
+    nothing, why = planner.plan_place_held(np.array([0.10, 0.0]), EDGE / 2, hold.cube_in_hand, hold.lean, hold.roll,
+                                           grip, 0.059)
+    assert nothing is None and "lean" in why

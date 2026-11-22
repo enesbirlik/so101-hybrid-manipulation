@@ -130,7 +130,23 @@ Every pick and place times its phases (`timing.PhaseTimer`; a retried phase adds
 - Grasp point of a tilted grasp: the gap point lies on the jaw axis through the cube centre at **mid-height**, `d` beyond it, with `d` such that vertical jaws would put it where the vertical planner does: the pads stay centred on the cube's mid-height as the jaws lean. If the lowest point of the hand (table model, moving jaw included) is below `min_final_clearance_mm`, the grasp point rises in 2 mm steps (≤ 6 mm). The gap-midpoint correction is the same 3-D point in `gripper_link`, so it is exact in the tilted frame.
 - Approach of a tilted grasp: the hover is `hover_height − grasp_tip_height` back **along the jaw axis** from the grasp point, and the descent follows that line (the jaws slide onto the cube); if that line runs out of the workspace (near the base wrist_flex is at its limit) the descent goes straight down with the jaws leaning. Lift: back along the line to the hover, then up to an exit pose (the height the leaning line gave away + 2 cm, if reachable).
 - Contact on the way down: `contact_watch` takes the joint a push against the descent line deflects most (`J_k · line` at the grasp pose; the lag of joint k is proportional to it). That is shoulder_lift with a positive lag for every grasp checked, vertical or leaning to 45°, so the existing threshold applies; `tilt_contact_joint` overrides it for tilted grasps.
-- A **tilted hold is placed with the same lean and wrist_roll** (`plan_place_held`: the only hand orientations that keep the cube flat are the grasp's turned about the vertical), straight down onto the target or, far out, along the jaw axis. That limits where such a cube can go: a cube picked at 40 cm (30° lean) can be put down at ~30-38 cm, not at 25 cm; the yaw and the stacking alignment are not chosen (they follow from the pan). The place answers with a clear message when the target is out of that band.
+- A **tilted hold is placed with the same lean and wrist_roll** (`plan_place_held`: the only hand orientations that keep the cube flat are the grasp's turned about the vertical), straight down onto the target or, far out, along the jaw axis. The arm reaches that orientation only in a band of radii, so if the cube cannot go down flat the lean moves towards vertical in 5° steps, at most `PLACE_MAX_TILT_DEG` (10°): the cube then lands on one bottom edge (released with that edge `release_gap` above the surface) and settles flat when let go; the plan summary says so. Measured offline: a cube picked at 40 cm (30° lean) can be put down at 18-30 cm (flat at 22 and 30 cm, 5° elsewhere); one picked at 12 cm (10° inward lean) only at ~20-25 cm. Yaw and stacking alignment are not chosen for a tilted hold (they follow from the pan). Outside the band the place fails in `carry` with the reason.
+
+**Reach** (`config/reach.yaml`, 2026-11-22: 30 mm cube, 30° open, max lean 45°, step 5°, closing ≤ 20° off horizontal, |roll| ≤ 90°; cube yaws 0/15/30/45° in base_link; radius from base_link's origin, 1 cm steps). Before the tilt sweep: 14-30 cm at pan 0, 12-30 cm at ±60°.
+
+| pan | near (some yaw) | far (some yaw) | near (all yaws) | far (all yaws) |
+|---|---|---|---|---|
+| −60 | 8 | 41 | 11 | 39 |
+| −45 | 9 | 42 | 12 | 37 |
+| −30 | 10 | 43 | 13 | 38 |
+| −15 | 10 | 43 | 12 | 38 |
+| 0 | 11 | 43 | 14 | 38 |
+| +15 | 11 | 43 | 13 | 40 |
+| +30 | 10 | 43 | 13 | 39 |
+| +45 | 9 | 42 | 11 | 37 |
+| +60 | 9 | 41 | 11 | 36 |
+
+At the far end the jaws lean the full 45°. What stops it: for a cube whose face normal is within ~20° of the radial direction, the arm's length (at 44 cm the IK misses by 3-5 mm; a 60° lean would add ~1 cm, to 44 cm, nothing reaches 46+); for other yaws, the closing direction: the jaws can only lean in the arm's plane, so a cube turned 25-45° to the radial direction is gripped with the closing direction tipped out of the horizontal by asin(sin(yaw)·sin(lean)) > 20°, and the two other closing options need wrist_roll ±135° (camera cable). At pan 0: any yaw up to 37-38 cm, at 40 cm yaws within ±25° of radial, at 42 cm within ±20°. At the near end shoulder_lift is at its limit (−97°) and wrist_flex at 95°, with an inward lean of 10-20°.
 
 - The vertical residual leaves ~2° of tilt: the wrist_roll joint axis is ~2.8° off the jaw direction in the URDF, and a 5-DOF arm cannot cancel that while also fixing the closing direction.
 
