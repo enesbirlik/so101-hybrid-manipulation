@@ -168,7 +168,7 @@ CallbackReturn SO101Hardware::on_activate(const rclcpp_lifecycle::State &)
         set_command(j.name + "/torque_limit", std::numeric_limits<double>::quiet_NaN());  // a stale runtime value does not come back
       }
       if (torque_state_[i]) {
-        set_state(j.name + "/torque_limit", torque_ceiling_[i]);
+        set_state(j.name + "/torque_limit", static_cast<double>(torque_ceiling_[i]));
       }
       bus_->write_u8(j.id, TORQUE_ENABLE, 1);
     }
@@ -281,7 +281,7 @@ return_type SO101Hardware::read(const rclcpp::Time &, const rclcpp::Duration &)
   }
   for (size_t i = 0; i < joints_.size(); ++i) {
     if (torque_state_[i]) {
-      set_state(joints_[i].name + "/torque_limit", torque_applied_[i]);
+      set_state(joints_[i].name + "/torque_limit", static_cast<double>(torque_applied_[i]));
     }
   }
   return return_type::OK;
