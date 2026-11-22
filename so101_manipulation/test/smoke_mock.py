@@ -15,11 +15,16 @@ It starts its own FAKE cube publisher and pick_place node per scenario (and stop
              and a far-view bias of 6 mm is corrected by the close-up refinement
   reach      cube 40 cm out: rejected in approach with a reach message
   cancel     cancel during the approach: the goal ends canceled, the arm stops
+  overview   ~/overview (cube seen through the fisheye model, fov_check): JSON answer, ~/state, then a
+             pick that skips the search (the cube is fresh and stable)
+  memory     a pick that had to sweep, the overview (cube out of view), a second pick: its search
+             starts with the view aimed at where the cube was last seen, and is faster
 
 Refuses to run on ROS_DOMAIN_ID 0 / unset (the real arm lives there).
 """
 
 import argparse
+import json
 import math
 import os
 import subprocess
@@ -35,6 +40,7 @@ from rclpy.node import Node  # noqa: E402
 from control_msgs.msg import JointTrajectoryControllerState  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
+from std_srvs.srv import Trigger  # noqa: E402
 from rclpy.qos import DurabilityPolicy, QoSProfile  # noqa: E402
 
 from so101_manipulation_interfaces.action import PickCube, PlaceCube  # noqa: E402
@@ -69,23 +75,42 @@ class Driver(Node):
         self.create_subscription(JointTrajectoryControllerState, "/gripper_controller/controller_state", self.on_gs, 50)
         self.create_subscription(String, "/robot_description", lambda m: setattr(self, "desc", m.data),
                                  QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.overview = self.create_client(Trigger, "/cube_pick_place/overview")
+        self.state = None
+        self.create_subscription(String, "/cube_pick_place/state", lambda m: setattr(self, "state", json.loads(m.data)),
+                                 QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
+    def call_overview(self, timeout=60):
+        assert self.overview.wait_for_service(timeout_sec=20), "no overview service"
+        fut = self.overview.call_async(Trigger.Request())
+        rclpy.spin_until_future_complete(self, fut, timeout_sec=timeout)
+        assert fut.done(), "overview: no answer in time"
+        return fut.result()
+
+    def settle_state(self, s=0.5):
+        t0 = time.time()
+        while time.time() - t0 < s:
+            rclpy.spin_once(self, timeout_sec=0.05)
+        return self.state
 
     def on_gs(self, m):
         # mock hardware starts with the gripper at 0 deg (below the floor); count the commands
         # once the node has moved the gripper above the floor
         if m.reference.positions:
             r = m.reference.positions[0]
-            if self.min_grip_cmd == math.inf and r < math.radians(11.0):
+            if self.min_grip_cmd == math.inf and r < math.radians(20.0):   # not yet opened once
                 return
             self.min_grip_cmd = min(self.min_grip_cmd, r)
 
     def call(self, client, goal, cancel_after_phase=None, timeout=240):
         phases = []
+        self.details = []
 
         def fb(m):
             f = m.feedback
             if not phases or phases[-1] != f.phase:
                 phases.append(f.phase)
+            self.details.append(f.detail)
             print(f"    [{f.phase}] {f.detail}")
         if not client.wait_for_server(timeout_sec=20):
             raise RuntimeError("action server not up")
@@ -175,6 +200,10 @@ def main():
         assert abs(r.hold_angle_deg - floor) < 0.01, r.hold_angle_deg
         assert d.min_grip_cmd >= math.radians(floor) - 1e-6, f"gripper command {math.degrees(d.min_grip_cmd):.2f} deg below the floor"
         assert abs(r.wrist_roll_deg) <= 90
+        assert "timing [s]: " in r.message and "total" in r.message, r.message
+        s = d.settle_state()
+        assert s and s["state"] == "idle" and s["holding"] == "cube_2", s
+        assert s["last"]["action"] == "pick" and s["last"]["success"] and "lift" in s["last"]["timing_s"], s
         st2, r2, ph2 = d.call(d.place, PlaceCube.Goal(x=0.25, y=-0.05, on_cube_id="", yaw_deg=float("nan")))
         assert st2 == S.STATUS_SUCCEEDED, f"place status {st2}: {r2.message}"
         for p in ["carry", "descend", "release", "retreat"]:
@@ -182,8 +211,50 @@ def main():
         assert math.hypot(r2.placed_position.x - 0.25, r2.placed_position.y + 0.05) < 0.003, r2.placed_position
         g = math.degrees(d.js.get("gripper", 0))
         assert abs(g - 30) < 1.5, f"gripper {g:.1f} after release"
+        s = d.settle_state()
+        assert s["holding"] is None and s["last"]["action"] == "place", s
         return True, (f"pick: contact {r.contact_angle_deg:.1f}, hold {r.hold_angle_deg:.1f}, held {r.held_angle_deg:.1f}, "
-                      f"roll {r.wrist_roll_deg:.0f}, tilt {r.jaw_tilt_deg:.1f}; place: {r2.message}")
+                      f"roll {r.wrist_roll_deg:.0f}, tilt {r.jaw_tilt_deg:.1f}; {r.message.split('|')[-1].strip()}; "
+                      f"place: {r2.message}")
+
+    def overview():
+        t0 = time.time()
+        resp = d.call_overview()
+        dt = time.time() - t0
+        out = json.loads(resp.message)
+        assert resp.success, out
+        cubes = {c["id"]: c for c in out["cubes"]}
+        assert "cube_2" in cubes, out
+        c = cubes["cube_2"]
+        assert math.hypot(c["x_cm"] - 27.0, c["y_cm"] + 10.0) < 0.5 and c["stable"], c
+        q = [math.degrees(d.js[n]) for n in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")]
+        assert abs(q[4] - (-72.4)) < 1.0, q
+        s = d.settle_state()
+        assert s["state"] == "idle" and s["holding"] is None, s
+        # the cube is fresh and stable from the overview: the pick does not search
+        st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2", hover_only=True))
+        assert st == S.STATUS_SUCCEEDED, r.message
+        search_s = float(r.message.split("search ")[1].split(",")[0])
+        assert search_s < 0.5, r.message
+        return True, f"overview {dt:.1f} s: {out}; pick: {r.message.split('|')[-1].strip()}"
+
+    def memory():
+        # the cube is only "seen" within 10 deg of the optical axis: the first pick sweeps for it;
+        # then the arm goes to the overview (cube out of view) and the next search starts with the
+        # view aimed at where the cube was last seen
+        st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2", hover_only=True))
+        assert st == S.STATUS_SUCCEEDED, r.message
+        first = float(r.message.split("search ")[1].split(",")[0])
+        resp = d.call_overview()
+        out = json.loads(resp.message)
+        assert not any(c["id"] == "cube_2" for c in out["cubes"]), out
+        st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2", hover_only=True))
+        assert st == S.STATUS_SUCCEEDED, r.message
+        second = float(r.message.split("search ")[1].split(",")[0])
+        found = [x for x in d.details if "found from view" in x]
+        assert found and "aimed at" in found[0], d.details
+        assert second < first, (first, second)
+        return True, f"search {first:.1f} s without memory, {second:.1f} s with it ({found[0]})"
 
     def search():
         st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2", hover_only=True))
@@ -205,7 +276,8 @@ def main():
         while time.time() - t0 < 1.0:
             rclpy.spin_once(d, timeout_sec=0.05)
         moved = max(abs(d.js[k] - q1[k]) for k in q1)
-        assert moved < 0.01, f"arm still moving after cancel ({math.degrees(moved):.1f} deg)"
+        who = max(q1, key=lambda k: abs(d.js[k] - q1[k]))
+        assert moved < 0.01, f"arm still moving after cancel ({who} {math.degrees(moved):.1f} deg)"
         return True, r.message
 
     base = {"x": 0.22, "y": 0.03, "yaw_deg": 20.0}
@@ -216,6 +288,8 @@ def main():
              {}, search)
     scenario("reach", {"x": 0.40, "y": 0.0, "yaw_deg": 0.0}, {}, reach)
     scenario("cancel", base, {}, cancel)
+    scenario("overview", {"x": 0.27, "y": -0.10, "yaw_deg": 10.0, "fov_check": "true"}, {}, overview)
+    scenario("memory", {"x": 0.20, "y": 0.08, "yaw_deg": -30.0, "visible_cone_deg": 10.0}, {}, memory)
     d.destroy_node()
     rclpy.try_shutdown()
     print("\nsummary:")

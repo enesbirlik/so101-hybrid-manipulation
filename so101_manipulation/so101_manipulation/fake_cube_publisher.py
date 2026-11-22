@@ -14,7 +14,9 @@ Parameters: cube (k), x, y [m], yaw_deg, rate_hz, noise_mm, visible_cone_deg (th
 while it lies within this angle of the wrist camera's optical axis, from the hand-eye file, to
 exercise the search; <= 0: always), far_bias_mm [bx, by] added in far views (the far view is less
 accurate, so the close-up refinement has something to correct); far = the fixed jaw tip higher
-than far_height (0.10 m) above the table; publish_tracked (true).
+than far_height (0.10 m) above the table; publish_tracked (true); fov_check (false: the cube is only
+"seen" when its top marker lies in the fisheye image, not behind the jaws and large enough, the
+same model as grasp.visible()).
 """
 
 import math
@@ -28,7 +30,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from vision_msgs.msg import Detection3D, Detection3DArray, ObjectHypothesisWithPose
 
-from .grasp import load_hand_eye
+from .grasp import load_fisheye, load_hand_eye, visible
 from .kinematics import ARM, ArmModel, perception_config_dir
 
 
@@ -45,8 +47,12 @@ class FakeCubes(Node):
         self.bias = np.array(self.declare_parameter("far_bias_mm", [0.0, 0.0]).value, float) / 1000
         self.far_h = float(self.declare_parameter("far_height", 0.10).value)
         self.tracked = bool(self.declare_parameter("publish_tracked", True).value)
+        self.fov = bool(self.declare_parameter("fov_check", False).value)
         self.model = ArmModel()
-        self.T_gc = load_hand_eye(perception_config_dir() / "wrist_camera_hand_eye.yaml") if self.vis > 0 else None
+        self.T_gc = (load_hand_eye(perception_config_dir() / "wrist_camera_hand_eye.yaml")
+                     if self.vis > 0 or self.fov else None)
+        self.cam = load_fisheye(perception_config_dir() / "wrist_camera_fisheye.yaml") if self.fov else None
+        self.grip = 0.0
         self.z = self.model.table_z + 0.015
         self.q, self.q_prev, self.moving_until = None, None, 0.0
         self.rng = np.random.default_rng(1)
@@ -64,6 +70,7 @@ class FakeCubes(Node):
         d = dict(zip(m.name, m.position))
         if not all(n in d for n in ARM):
             return
+        self.grip = d.get("gripper", self.grip)
         q, t = np.array([d[n] for n in ARM]), time.monotonic()
         if self.q_prev is not None and t > self.q_prev[1]:
             v = np.max(np.abs(q - self.q_prev[0])) / (t - self.q_prev[1])
@@ -89,7 +96,17 @@ class FakeCubes(Node):
         arr = Detection3DArray()
         arr.header.stamp, arr.header.frame_id = now, "base_link"
         still = time.monotonic() > self.moving_until
-        if self.q is not None and still and (self.vis <= 0 or self.angle_from_axis() < self.vis):
+        if self.q is None or not still:
+            # like the real detector: frames taken while the arm moves are not published (the
+            # tracked memory still is)
+            if self.tracked:
+                self.publish_tracked()
+            return
+        in_view = self.vis <= 0 or self.angle_from_axis() < self.vis
+        if in_view and self.fov:
+            top = np.array([[self.x, self.y, self.z + 0.015]])
+            in_view = bool(visible(self.model, self.T_gc, self.cam, self.q, self.grip, top)[0])
+        if in_view:
             tip_z = self.model.tip(self.q)[2] - self.model.table_z
             c = np.array([self.x, self.y, self.z]) + np.r_[self.rng.normal(0, self.noise, 2), 0.0]
             if tip_z > self.far_h:

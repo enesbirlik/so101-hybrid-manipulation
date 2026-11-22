@@ -39,6 +39,30 @@ ros2 launch so101_manipulation pick_place.launch.py fake_cube:=true fake_x:=0.22
 | `/pick_cube` | `so101_manipulation_interfaces/action/PickCube` | goal `cube_id` ("2", "cube_2", "K2"), `hover_only`; result `success`, `message`, `failed_phase`, contact / hold / held angles, cube pose, wrist roll, jaw tilt, close-up shift; feedback `phase`, `detail`, `gripper_deg` |
 | `/place_cube` | `so101_manipulation_interfaces/action/PlaceCube` | goal `x`, `y` [m] or `on_cube_id`, `yaw_deg` (NaN: any); result `success`, `message`, `failed_phase`, `placed_position` |
 | `/cube_pick_place/open_gripper` | `std_srvs/Trigger` | open slowly where the arm is (the only "let go" besides PlaceCube) |
+| `/cube_pick_place/overview` | `std_srvs/Trigger` | move to the overview pose, look at the table, answer with the cubes seen (JSON, below) |
+| `/cube_pick_place/state` | `std_msgs/String`, transient local (latched), reliable, depth 1 | node state as JSON (below), on every change and at 1 Hz |
+
+**`/cube_pick_place/overview`** (`std_srvs/Trigger`, empty request). Rejected at once (`success: false`, `{"error": "busy with a pick/place goal", "cubes": []}`) while a goal or service runs. Otherwise: jaws to `search_gripper_deg` (unless a cube is held: the grip stays and the cube counts in the clearance), a clearance-checked transit to each pose of `overview_poses_deg` (via a raised pose if needed), then a wait until `overview_min_frames` frames were processed after the arm stopped (+`obs_settle_s`) and every cube seen is stable, at most `overview_wait_s`. `success` = moved and saw frames from the detector. `message` is JSON:
+
+```json
+{"cubes": [{"id": "cube_2", "x_cm": 27.0, "y_cm": -10.0, "z_cm": 1.5, "yaw_deg": 9.8, "stable": true, "age_s": 0.06}],
+ "frames": 8, "views": ["overview0"], "holding": null, "duration_s": 4.4}
+```
+
+`cubes`: every cube observed from the overview (base_link, cm; yaw folded to [−45°, 45°); `stable` as in `/cubes/tracked`), sorted by id; `holding`: the cube in the jaws or null; on failure an extra `"error": "..."` (and `success: false`). The arm stays at the overview pose afterwards, so a following pick of a cube seen there skips the search.
+
+**`/cube_pick_place/state`** (`std_msgs/String`, transient local): JSON, sorted keys:
+
+```json
+{"state": "idle", "action": "", "cube": "", "phase": "", "held": "cube_2", "holding": "cube_2",
+ "last": {"action": "pick", "cube": "cube_2", "success": true, "failed_phase": "",
+          "timing_s": {"setup": 0.0, "search": 0.0, "approach": 2.8, "refine": 0.9, "descend": 3.1,
+                       "grasp": 2.9, "verify": 0.0, "lift": 2.1, "total": 11.8}}}
+```
+
+- `state`: `"idle"` or `"busy"`; `action`: `"pick"`, `"place"`, `"overview"`, `"open_gripper"` or `""`; `cube`: the goal's cube; `phase`: the current phase.
+- `held` (= `holding`): the cube the node believes is between the jaws (`"cube_<k>"`, or `"cube (held at start)"` for a place after a restart that found the jaws closed on something), or `null`. Set by a successful pick; cleared by a place, `open_gripper`, a cube lost in the lift, or a pick that finds the jaws empty. A restarted node starts with `null` (a PlaceCube then checks the grip itself).
+- `last`: the last pick/place with its per-phase timing (below), or null.
 | `/cubes/tracked`, `/cubes/detections` | `vision_msgs/Detection3DArray` | in: cube poses from `so101_perception` (see `cube_source`) |
 | `/arm_controller/…`, `/gripper_controller/…` | `FollowJointTrajectory`, `JointTrajectoryControllerState` | out / in: motion and lag |
 | `/dynamic_joint_states` | `control_msgs/DynamicJointState` | in: gripper load, current, `torque_limit` |
@@ -50,15 +74,49 @@ Custom actions because no standard type fits a "pick cube k" goal with these pha
 
 **PickCube**
 
-1. **search**: wait `search_initial_wait_s` for a stable estimate where the arm is; else sweep the view poses (autograb's: *near* camera ~20 cm above the table, *close* 17 cm out, *far* 33 cm out, each at `search_pans_deg`), sorted by how close the camera axis points to where the cube was last seen. The jaws go to `search_gripper_deg` (never below the floor).
-2. **approach**: plan the grasp (below), open to `open_deg`, transit to the hover pose.
+1. **search** (details below): none at all when the cube is fresh and stable; else a short look where the arm is, then the views in order: aimed at where the cube was last seen, the overview, autograb's views.
+2. **approach**: plan the grasp (below), transit to the hover pose, opening the jaws to `open_deg` on the way (`open_during_approach`: the path is checked for the closed, half-open and open jaws; the jaws are opened only where the open jaws clear the table by 2 cm).
 3. **refine**: at the hover, wait for a fresh stable estimate (observations only count from `obs_settle_s` after the arm stopped), re-target when it moved > `refine_min_shift_mm`, at most `refine_max_iter` times; abort beyond `refine_max_shift_mm`. Any face of the cube counts (the 2026-11-21 script skipped the refinement when the close-up saw a different part of the object); the yaw is compared modulo 90°.
-4. **descend**: torque limit lowered (and confirmed) at the hover; the hover trim takes the servos' static error out and is reused below; then one continuous move down to the grasp height through the `descend_step` points; contact stop when the `contact_joint` lag (reference − feedback) rises more than `descend_contact_lag_deg` over the hover baseline: back up to the hover and abort.
+4. **descend**: torque limit lowered (and confirmed) at the hover; the hover trim takes the servos' static error out and is reused below (short passes: measure after `trim_settle_s`, apply the whole error in one `trim_move_s` move, a second pass only if still beyond `trim_tol_deg`); then one continuous move down to the grasp height through the `descend_step` points; contact stop when the `contact_joint` lag (reference − feedback) rises more than `descend_contact_lag_deg` over the hover baseline: back up to the hover and abort.
 5. **grasp**: the soft grasp (below).
 6. **verify**: held / empty / uncertain from the jaw angle and current. Not held: open slowly, rise to the hover, abort.
-7. **lift**: straight back up to the hover, judge the grip again (lost: abort, gripper left as it is).
+7. **lift**: straight back up to the hover in one continuous move through the descent points (with the hover trim's bias, no stop at each point), judge the grip again (lost: abort, gripper left as it is).
 
-**PlaceCube**: **carry** (transit to the hover over the target, the carried cube counted in the clearance), **refine** (stacking only: close-up of the lower cube), **descend** (contact stop = the cube is down), **release** (open slowly, then restore the torque limit), **retreat** (back up to the hover). Stacking aligns the closing direction with the lower cube's faces and puts the release at its top.
+**PlaceCube**: **carry** (transit to the hover over the target, the carried cube counted in the clearance), **refine** (stacking only: close-up of the lower cube), **descend** (contact stop = the cube is down), **release** (open slowly, then restore the torque limit), **retreat** (back up to the hover, one continuous move with the trim bias). Stacking aligns the closing direction with the lower cube's faces and puts the release at its top.
+
+### Search
+
+The node keeps, for the whole session, where every cube was last seen (newest `/cubes/tracked` or `/cubes/detections` observation; a picked cube is "in the jaws", a placed one is where it was put). A search:
+
+1. **Skip**: a stable estimate with `obs_min_fresh` observations from the last `search_fresh_s` (e.g. right after an overview, or when the cube is in view) is used at once: no wait, no move. (Before, the search always waited for observations newer than the goal, ~0.3–1 s.)
+2. **Look where the arm is** for up to `search_initial_wait_s`.
+3. **Views**, in order; at each, observations count from `obs_settle_s` after the arm stopped, for up to `search_view_wait_s`, but the view is left as soon as `search_empty_frames` processed frames (the detector publishes `/cubes/detections` for every frame taken while the arm stands still, also an empty one) came without the cube:
+   - **aimed**: the camera looking down at the cube's last known position (`grasp.aim_view_pose`, from the first of `search_aim_heights` whose image shows the top face past the jaws in the fisheye model);
+   - the **overview** pose(s);
+   - autograb's views (*near* camera ~20 cm above the table, *close* 17 cm out, *far* 33 cm out, each at `search_pans_deg`), sorted by how close their optical axis points to the last known position.
+
+The jaws go to `search_gripper_deg` (never below the floor) while searching.
+
+### Overview pose
+
+`overview_poses_deg` = **[22.8, −77.0, 40.9, 89.4, −72.4]°** (pan, lift, elbow, wrist_flex, roll), from `grasp.overview_pose()`: start with the camera ~28 cm above the table looking straight down at 22 cm out (least squares like `view_pose`, pan and roll free: the camera sits beside the jaws, so looking straight down takes a large wrist_roll), then a seeded random local search on the coverage itself, keeping |roll| ≤ 85°, wrist_flex 5° inside its limit, the camera ≥ 24 cm up, the arm ≥ 6 cm above the table. Coverage (`grasp.view_coverage`) = the share of cube positions on a 1 cm grid whose top face is in the 1280×720 fisheye image (equidistant model of `wrist_camera_fisheye.yaml`, 10 px margin, < 85° off axis), not behind the jaws (projected hulls of `gripper_link` and the moving jaw at `search_gripper_deg`), the 22 mm top marker ≥ 30 px (15 px at the detector's 640 px; the smallest is 42 px) and seen at a view cosine ≥ 0.3.
+
+| | camera above the table | 15–30 cm × ±15 cm | 15–30 × ±20 cm | 12–34 × ±22 cm |
+|---|---|---|---|---|
+| overview | 24.8 cm, axis 15° off vertical | **99 %** (misses 5 points at 15–16 cm, y −1…+3 cm: behind the jaws) | 88 % | 72 % |
+| autograb's *near* view (pan 0) | 19.9 cm | 48 % | | |
+
+One pose is enough, so there is one. Recompute after a new hand-eye or kinematic calibration (~40 s):
+
+```bash
+python3 -c "import math, numpy as np; from so101_manipulation import grasp as g; from so101_manipulation.kinematics import ArmModel, perception_config_dir as d; m = ArmModel(); q, f = g.overview_pose(m, g.load_hand_eye(d() / 'wrist_camera_hand_eye.yaml'), g.load_fisheye(d() / 'wrist_camera_fisheye.yaml')); print(np.degrees(q).round(1).tolist(), f)"
+```
+
+The node logs the coverage of the configured pose(s) at startup.
+
+### Timing
+
+Every pick and place times its phases (`timing.PhaseTimer`; a retried phase adds up). The result `message` ends with `| timing [s]: setup 0.0, search 0.0, approach 2.8, refine 0.9, descend 3.1, grasp 2.9, verify 0.0, lift 2.1, total 11.8` (also on failure and cancel), the node logs the same line, and `~/state` carries it as `last.timing_s`. `descend` includes the torque-limit check and the hover trim; `grasp` the close and the grip settle. Place: `setup, carry, refine (stacking), descend, release, retreat, total`.
 
 ## Grasp geometry (`grasp.py`)
 
@@ -73,7 +131,7 @@ A 30 mm paper cube was crushed by a position-controlled close far below its widt
 
 1. **Hard command floor.** No gripper command ever goes below the angle of a jaw gap of `cube_edge_mm − squeeze_mm` (gap ≈ `gap_zero_mm` + `gap_per_deg_mm` × angle; 30 mm, 1.5 mm → **11.48°**). The closing ramp ends there, hold targets are clamped to it, and `motion.py` clamps every gripper goal the node sends. The servo is position-controlled, so this alone bounds the force. Measured: an empty gripper commanded to 11.48° stops at 12.04° (deadband), the paper cube at 12.48–12.57° held steadily for 10 s, undamaged.
 2. **Torque limit** `gripper_torque_limit` (200 = 20 %, enough for a paper cube) during the grasp: published repeatedly until the `torque_limit` readback in `/dynamic_joint_states` matches (a single publish was lost on the real arm), abort if not within `torque_limit_timeout_s`; restored to `gripper_torque_restore` only after the gripper has opened. Skipped on mock hardware; on the real arm a missing interface aborts unless `torque_limit_required` is false.
-3. **Slow close** at `close_speed_deg_s` from `open_deg` to the floor, with contact detection on the way. Sign: the controller lag (commanded − measured) goes *negative* when the jaws are blocked (free closing −0.3…−0.5°). The detector uses `measured − commanded` above its running free-closing baseline > `contact_lag_deg` for `contact_samples` samples (optionally load). A contact above `expected + contact_window_deg` (expected 12.6° for 30 mm) means something wider is between the jaws: freeze, open, back off, retry (`grasp_retries`) or abort. A contact inside the window moves the command to max(floor, contact − `squeeze_deg`). Note: with the floor this close to the cube the lag barely moves (−0.7° on the real arm), so the held decision does not rely on it.
+3. **Two-speed close**, with contact detection on the way: fast (`close_fast_speed_deg_s`) from `open_deg` down to `expected + contact_window_deg + close_slow_lead_deg` (21.1° for 30 mm), where no contact can count anyway, then slow (`close_speed_deg_s`) through the whole window down to the floor (`soft_grasp.close_ramp`; 2.0 s instead of 3.1 s). The slow part is sent in 1° pieces with explicit velocities (`ramp_trajectory`) so the controller's cubic segments are straight lines there and the last piece ends at rest exactly at the floor without overshoot (positions-only inner points made the mock controller dip to 11.14°, below the floor). Only samples of the slow part train the contact baseline (`ContactDetector.baseline_below_deg`): the larger tracking lag of the fast part would make a contact show late. Sign: the controller lag (commanded − measured) goes *negative* when the jaws are blocked (free closing −0.3…−0.5°). The detector uses `measured − commanded` above its running free-closing baseline > `contact_lag_deg` for `contact_samples` samples (optionally load). A contact above `expected + contact_window_deg` (expected 12.6° for 30 mm) means something wider is between the jaws: freeze, open, back off, retry (`grasp_retries`) or abort. A contact inside the window moves the command to max(floor, contact − `squeeze_deg`). Note: with the floor this close to the cube the lag barely moves (−0.7° on the real arm), so the held decision does not rely on it.
 4. **Held or not**, standing at the final command `c` after `grip_settle_s`: **held** if the jaws stopped above `c + empty_deadband_deg + held_angle_margin_deg` (12.29° for 30 mm) or the current averaged over `current_window_s` is ≥ `held_current_ma`; **empty** if at or below `c + empty_deadband_deg + empty_angle_tol_deg` with current < `empty_current_ma`; anything else is **uncertain** and treated as not held. The same check runs again after the lift.
 
 Mock hardware has no contact and no deadband: without `sim_contact_deg` a pick ends cleanly "not held" (jaws at the floor = empty); with it, the measured angle is replaced by max(actual, `sim_contact_deg`).
@@ -85,7 +143,7 @@ Mock hardware has no contact and no deadband: without `sim_contact_deg` a pick e
 - **Limits**: every arm goal is checked against the planning limits and |wrist_roll| ≤ `roll_limit_deg` before it is sent; IK bounds keep the roll inside as well.
 - **Speeds** are parameters (`transit_speed`, `approach_speed`, `descend_speed`, `lift_speed`, gripper `close_speed_deg_s` / `open_speed_deg_s`).
 - **Cancel** (Ctrl-C in the CLI, or cancel the goal): active controller goals are canceled, so the joints hold where they are; the gripper is never opened by a cancel. One goal at a time; others are rejected while busy.
-- The gripper opens only in: approach (high above the table), a miss at the bottom (after "not held"), release, and the `open_gripper` service.
+- The gripper opens only in: approach (during the move to the hover, from a pose where the open jaws clear the table by 2 cm, along a path checked for every jaw angle), a miss at the bottom (after "not held"), release, and the `open_gripper` service.
 
 ## Perception adapter (`cube_tracker.py`)
 
@@ -98,21 +156,22 @@ Mock hardware has no contact and no deadband: without `sim_contact_deg` a pick e
 ## Tests
 
 ```bash
-cd so101_manipulation && python3 -m pytest -q test          # no ROS graph needed: geometry, soft grasp, adapter, torque hook, params
+cd so101_manipulation && python3 -m pytest -q test          # no ROS graph needed: geometry, soft grasp, close ramp, search views, overview coverage, adapter, timing, torque hook, params
 export ROS_DOMAIN_ID=42                                       # mock integration test, see its docstring
 ros2 launch so101_moveit_config demo.launch.py rviz:=false &
-python3 test/smoke_mock.py                                    # miss, pick_place, search, reach, cancel
+python3 test/smoke_mock.py                                    # miss, pick_place, search, reach, cancel, overview, memory
 ```
 
-`test/smoke_mock.py` starts its own FAKE cube publisher (`fake_cube_publisher`: `/cubes/detections` and `/cubes/tracked`, frames ignored while the arm moves, optional field-of-view cone and far-view bias) and node per scenario, and refuses to run on domain 0 or on real hardware.
+`test/smoke_mock.py` starts its own FAKE cube publisher (`fake_cube_publisher`: `/cubes/detections` and `/cubes/tracked`, frames ignored (not published) while the arm moves, optional field-of-view cone, `fov_check` through the fisheye model, far-view bias) and node per scenario, and refuses to run on domain 0 or on real hardware.
 
 ## Files
 
 | File | Content |
 |---|---|
 | `so101_manipulation/pick_place_node.py` | action server, phases, parameters (`PARAMS`) |
-| `so101_manipulation/grasp.py` | grasp IK, closing options, reach, view poses |
-| `so101_manipulation/soft_grasp.py` | floor, contact detector, hold target, held / empty |
+| `so101_manipulation/grasp.py` | grasp IK, closing options, reach, view poses, fisheye visibility / coverage, overview and aimed views, search order |
+| `so101_manipulation/soft_grasp.py` | floor, contact detector, two-speed close ramp, hold target, held / empty |
+| `so101_manipulation/timing.py` | per-phase timer |
 | `so101_manipulation/kinematics.py` | FK from the URDF + `so101_kinematics.yaml`, mesh hulls, table clearance (no ROS) |
 | `so101_manipulation/motion.py` | trajectories to the controllers, limit and floor checks, lag / current / torque-limit state |
 | `so101_manipulation/cube_tracker.py` | perception adapter |
@@ -126,6 +185,9 @@ python3 test/smoke_mock.py                                    # miss, pick_place
 - The descent contact thresholds come from the toy grasp; a paper cube may give a weaker shoulder_lift lag when a jaw lands on it.
 - Close-up visibility of the cube at the hover with the jaws open, and the far/close accuracy, are from one session.
 - Stacking (`place --on`) has not run on mock with two cubes or on the real arm.
+- Overview pose, aimed views, early view exit, two-speed close, short hover trim and continuous lift/retreat (2026-11-22) have run on mock only. The coverage is a model: the jaw silhouette is the convex hull of the meshes, the marker size and view-angle limits are estimates, and the detector's real range at the image border is untested. The overview needs wrist_roll −72° and wrist_flex 89°.
+- `search_empty_frames` 6 (~0.4 s at 15 fps) may leave a view where a small, far cube is only found in some frames; raise it if searches miss cubes that are in view.
+- Hover trim with one 0.4 s move and 0.25 s settles: the measurement after 0.25 s may still be settling (stick-slip at P 16); `trim_max_iter` 2 allows one more pass.
 
 ## Parameters
 
@@ -154,6 +216,17 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 | `search_initial_wait_s` | `1.0` | first look for the cube where the arm is, this long |
 | `search_view_wait_s` | `2.0` | wait for a stable cube at each view pose |
 | `search_gripper_deg` | `12.0` | jaws nearly shut while searching (they hide less of the image); clamped to the floor |
+| `search_fresh_s` | `1.0` | a stable estimate with obs_min_fresh observations from the last this many s skips the search |
+| `search_empty_frames` | `6` | leave a view early once this many processed frames (/cubes/detections) after the settle did not show the cube; 0 = always wait search_view_wait_s |
+| `search_aim_heights` | `[0.22, 0.26, 0.18]` | camera heights [m] tried for the first view, aimed at where the cube was last seen (the first that sees it wins) |
+
+**Overview**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `overview_poses_deg` | `[22.8, -77.0, 40.9, 89.4, -72.4]` | overview pose(s), 5 joints each (pan, lift, elbow, wrist_flex, roll) [deg], flat list; grasp.overview_pose() |
+| `overview_wait_s` | `3.0` | overview: wait at most this long per pose for fresh frames and stable tracks |
+| `overview_min_frames` | `8` | overview: processed frames to see after the arm stopped |
 
 **Grasp geometry**
 
@@ -178,8 +251,10 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 |---|---|---|
 | `refine_max_iter` | `2` | close-up refinements at the hover |
 | `trim_tol_deg` | `0.3` | hover trim: stop when every measured arm joint is within this of the plan |
-| `trim_max_iter` | `3` | hover trim: correction moves at most |
+| `trim_max_iter` | `2` | hover trim: correction moves at most (each applies the whole measured error) |
 | `trim_max_bias_deg` | `5.0` | hover trim: largest correction added to a joint command |
+| `trim_move_s` | `0.4` | hover trim: duration of one correction move |
+| `trim_settle_s` | `0.25` | hover trim: wait before each measurement |
 | `refine_min_shift_mm` | `2.0` | re-target when the close-up estimate moved more than this |
 | `refine_max_shift_mm` | `40.0` | abort when the close-up estimate moved more than this |
 | `refine_timeout_s` | `3.0` | wait this long for a stable close-up estimate |
@@ -197,7 +272,10 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `close_speed_deg_s` | `6.0` | closing ramp speed |
+| `close_speed_deg_s` | `6.0` | closing ramp speed inside the contact window (and close_slow_lead_deg above it) |
+| `close_fast_speed_deg_s` | `20.0` | closing speed above the contact window + close_slow_lead_deg (no contact can count there); <= close_speed_deg_s: one slow ramp from open |
+| `close_slow_lead_deg` | `3.5` | the slow part starts this far above the window (the contact baseline warms up) |
+| `open_during_approach` | `true` | open the jaws during the move to the hover (the path is checked for closed, half-open and open jaws) instead of before it |
 | `open_speed_deg_s` | `20.0` | opening speed (release, abort) |
 | `contact_lag_deg` | `1.0` | contact when measured - commanded (= -(controller lag), positive when blocked) is this far above its free-closing baseline |
 | `contact_samples` | `3` | consecutive samples over the threshold |

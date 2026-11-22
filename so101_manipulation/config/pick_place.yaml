@@ -19,6 +19,13 @@ cube_pick_place:
     search_initial_wait_s: 1.0  # first look for the cube where the arm is, this long
     search_view_wait_s: 2.0  # wait for a stable cube at each view pose
     search_gripper_deg: 12.0  # jaws nearly shut while searching (they hide less of the image); clamped to the floor
+    search_fresh_s: 1.0  # a stable estimate with obs_min_fresh observations from the last this many s skips the search
+    search_empty_frames: 6  # leave a view early once this many processed frames (/cubes/detections) after the settle did not show the cube; 0 = always wait search_view_wait_s
+    search_aim_heights: [0.22, 0.26, 0.18]  # camera heights [m] tried for the first view, aimed at where the cube was last seen (the first that sees it wins)
+    # overview
+    overview_poses_deg: [22.8, -77.0, 40.9, 89.4, -72.4]  # overview pose(s), 5 joints each (pan, lift, elbow, wrist_flex, roll) [deg], flat list; grasp.overview_pose()
+    overview_wait_s: 3.0  # overview: wait at most this long per pose for fresh frames and stable tracks
+    overview_min_frames: 8  # overview: processed frames to see after the arm stopped
     # grasp geometry
     open_deg: 30.0  # gripper opening for the approach (~53 mm gap)
     grasp_tip_height: 0.011  # fixed jaw tip above the cube's bottom at the grasp
@@ -35,8 +42,10 @@ cube_pick_place:
     # close-up refinement
     refine_max_iter: 2  # close-up refinements at the hover
     trim_tol_deg: 0.3  # hover trim: stop when every measured arm joint is within this of the plan
-    trim_max_iter: 3  # hover trim: correction moves at most
+    trim_max_iter: 2  # hover trim: correction moves at most (each applies the whole measured error)
     trim_max_bias_deg: 5.0  # hover trim: largest correction added to a joint command
+    trim_move_s: 0.4  # hover trim: duration of one correction move
+    trim_settle_s: 0.25  # hover trim: wait before each measurement
     refine_min_shift_mm: 2.0  # re-target when the close-up estimate moved more than this
     refine_max_shift_mm: 40.0  # abort when the close-up estimate moved more than this
     refine_timeout_s: 3.0  # wait this long for a stable close-up estimate
@@ -46,7 +55,10 @@ cube_pick_place:
     descend_contact_lag_deg: 2.5  # lag above the hover baseline during the descent = contact
     descend_lag_samples: 15  # controller states averaged after each step
     # soft grasp (gripper)
-    close_speed_deg_s: 6.0  # closing ramp speed
+    close_speed_deg_s: 6.0  # closing ramp speed inside the contact window (and close_slow_lead_deg above it)
+    close_fast_speed_deg_s: 20.0  # closing speed above the contact window + close_slow_lead_deg (no contact can count there); <= close_speed_deg_s: one slow ramp from open
+    close_slow_lead_deg: 3.5  # the slow part starts this far above the window (the contact baseline warms up)
+    open_during_approach: true  # open the jaws during the move to the hover (the path is checked for closed, half-open and open jaws) instead of before it
     open_speed_deg_s: 20.0  # opening speed (release, abort)
     contact_lag_deg: 1.0  # contact when measured - commanded (= -(controller lag), positive when blocked) is this far above its free-closing baseline
     contact_samples: 3  # consecutive samples over the threshold
