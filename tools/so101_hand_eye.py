@@ -153,15 +153,15 @@ def origin_transform(joint):
                      [float(v) for v in o.get("xyz", "0 0 0").split()])
 
 
-def load_kinematics(path=KINEMATICS_FILE):
+def load_kinematics(path=None):
     """Calibrated joint origins of the URDF: {joint: {xyz, rpy, cad: {xyz, rpy}}}."""
-    with open(path) as f:
+    with open(path or KINEMATICS_FILE) as f:
         return yaml.safe_load(f)["joints"]
 
 
-def load_table_z(path=KINEMATICS_FILE):
+def load_table_z(path=None):
     """The table surface in base_link [m] for the calibrated origins, or None if not measured."""
-    with open(path) as f:
+    with open(path or KINEMATICS_FILE) as f:
         return yaml.safe_load(f).get("table_z")
 
 
@@ -987,6 +987,7 @@ def cmd_kinematics(args):
 
 
 def main():
+    global KINEMATICS_FILE
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", help="serial port (default: the single /dev/serial/by-id/usb-1a86_* adapter)")
     parser.add_argument("--device", default=cam.DEFAULT_DEVICE, help="V4L2 device (default: the wrist camera)")
@@ -994,6 +995,8 @@ def main():
     parser.add_argument("--file", type=Path, default=DEFAULT_FILE, help=f"result YAML (default: {DEFAULT_FILE})")
     parser.add_argument("--joint-file", type=Path, default=JOINT_FILE, help="joint calibration file")
     parser.add_argument("--intrinsics", type=Path, default=cam.DEFAULT_FILE, help="camera intrinsics YAML")
+    parser.add_argument("--kinematics", type=Path, default=KINEMATICS_FILE,
+                        help="joint origins (and table_z) to read; kinematics --write saves here (default: the repo file)")
     parser.add_argument("--square-mm", type=float, default=24.0, help="measured printed square side (default: 24)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     capture = sub.add_parser("capture")
@@ -1016,8 +1019,9 @@ def main():
     kinematics.add_argument("--board-on-table", dest="free_board", action="store_false",
                             help="pin each board on the table (z = BOARD_Z) instead of a free pose; worse so far (7.1 vs 2.7 px)")
     kinematics.add_argument("--write", action="store_true",
-                            help=f"save the joint origins to {KINEMATICS_FILE.name} and the camera pose to --file")
+                            help="save the joint origins to --kinematics and the camera pose to --file")
     args = parser.parse_args()
+    KINEMATICS_FILE = args.kinematics
     {"capture": cmd_capture, "auto": cmd_auto, "solve": cmd_solve, "kinematics": cmd_kinematics}[args.cmd](args)
 
 
