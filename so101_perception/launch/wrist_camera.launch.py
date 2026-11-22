@@ -23,7 +23,7 @@ def generate_launch_description():
         DeclareLaunchArgument("fps", default_value="15.0",
                               description="publish rate; the camera delivers 30 fps in good light, ~25 in dim light"),
         DeclareLaunchArgument("cubes", default_value="false",
-                              description="also run the ArUco cube detector (cubes/detections, wrist_camera/cubes/compressed)"),
+                              description="also run the ArUco cube detector (cubes/detections, cubes/tracked, wrist_camera/cubes/compressed)"),
         Node(
             package="so101_perception",
             executable="wrist_camera_node.py",
