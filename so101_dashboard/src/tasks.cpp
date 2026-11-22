@@ -485,6 +485,11 @@ bool TaskRunner::start_place(double x, double y, double yaw_deg, int on_cube)
   goal.y = y;
   goal.yaw_deg = yaw_deg;
   goal.on_cube_id = on_cube >= 0 ? std::to_string(on_cube) : "";
+  int held_cube;   // for the 3D view: which cube the result puts down
+  {
+    std::lock_guard<std::mutex> lock(state_.mutex);
+    held_cube = cube_index(state_.holding.cube);
+  }
   rclcpp_action::Client<PlaceCube>::SendGoalOptions callbacks;
   callbacks.goal_response_callback = [this](rclcpp_action::ClientGoalHandle<PlaceCube>::SharedPtr handle) {
       if (!handle) {
@@ -501,7 +506,8 @@ bool TaskRunner::start_place(double x, double y, double yaw_deg, int on_cube)
     const std::shared_ptr<const PlaceCube::Feedback> feedback) {
       on_phase(feedback->phase, feedback->detail);
     };
-  callbacks.result_callback = [this](const rclcpp_action::ClientGoalHandle<PlaceCube>::WrappedResult & result) {
+  callbacks.result_callback = [this, held_cube, yaw_deg](
+    const rclcpp_action::ClientGoalHandle<PlaceCube>::WrappedResult & result) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
         place_goal_.reset();
@@ -510,6 +516,16 @@ bool TaskRunner::start_place(double x, double y, double yaw_deg, int on_cube)
       const std::string message = r ? r->message : "no result";
       const std::string phase = r ? r->failed_phase : "";
       if (result.code == rclcpp_action::ResultCode::SUCCEEDED && r && r->success) {
+        {
+          std::lock_guard<std::mutex> lock(state_.mutex);
+          PlacedResult & p = state_.placed;
+          p.cube = held_cube;
+          p.position = {static_cast<float>(r->placed_position.x), static_cast<float>(r->placed_position.y),
+            static_cast<float>(r->placed_position.z)};
+          p.yaw_deg = static_cast<float>(yaw_deg);
+          p.at = now_s();
+          ++p.seq;
+        }
         set_holding(Holding{});
         finish(true, message);
         return;

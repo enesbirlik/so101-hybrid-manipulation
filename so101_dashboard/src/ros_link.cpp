@@ -195,6 +195,7 @@ void RosLink::on_tracked(const vision_msgs::msg::Detection3DArray & msg)
   // no message mentioned it for TRACKED_TIMEOUT_S; the detector sends all of them in every message
   constexpr double TRACKED_TIMEOUT_S = 2.0;
   const double now = now_s();
+  const rclcpp::Time ros_now = this->now();
   std::lock_guard<std::mutex> lock(state_.mutex);
   auto & cubes = state_.tracked;
   for (auto it = cubes.begin(); it != cubes.end(); ) {
@@ -213,6 +214,14 @@ void RosLink::on_tracked(const vision_msgs::msg::Detection3DArray & msg)
     c.edge = d.bbox.size.x > 0 ? static_cast<float>(d.bbox.size.x) : 0.03f;
     c.score = static_cast<float>(d.results[0].hypothesis.score);
     c.received = now;
+    // header.stamp = the last image the cube was seen in (perception README); a zero stamp or a
+    // clock that does not match (sim time, another machine) counts as "seen now"
+    const rclcpp::Time stamp(d.header.stamp, ros_now.get_clock_type());
+    double age = stamp.nanoseconds() > 0 ? (ros_now - stamp).seconds() : 0.0;
+    if (!std::isfinite(age) || age < -0.5 || age > 3600.0) {
+      age = 0.0;
+    }
+    c.seen = now - std::max(0.0, age);
     cubes[k] = c;
   }
 }
@@ -225,6 +234,15 @@ void RosLink::on_pick_state(const std_msgs::msg::String & msg)
   const std::string busy = json_value(text, "busy");
   const std::string status = json_value(text, "state").empty() ? json_value(text, "status") : json_value(text, "state");
   s.busy = busy == "true" || status == "busy";
+  // keys are sorted: the top-level "action" comes before "last" and its own "action"
+  const size_t last_at = text.find("\"last\"");
+  s.action = json_value(text.substr(0, last_at), "action");
+  const std::string last = json_value(text, "last");
+  if (!last.empty() && last.front() == '{') {
+    s.last_action = json_value(last, "action");
+    s.last_cube = json_value(last, "cube");
+    s.last_success = json_value(last, "success") == "true";
+  }
   for (const char * key : {"held", "holding", "held_cube"}) {
     bool is_string = false;
     std::string v = json_value(text, key, &is_string);
