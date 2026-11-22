@@ -1,0 +1,24 @@
+# Find an ArUco cube with the wrist camera and grasp it from above, softly.
+# Phases (feedback.phase): search, approach, refine, descend, grasp, verify, lift.
+
+# Goal
+string cube_id            # "cube_<k>", "<k>" or "K<k>"
+bool hover_only           # dry run: stop at the hover pose after the close-up refinement
+---
+# Result
+bool success
+string message
+string failed_phase       # phase that failed, empty on success
+float32 contact_angle_deg # gripper angle where the jaws met the cube (NaN: no contact)
+float32 hold_angle_deg    # hold target sent after contact (contact - squeeze)
+float32 held_angle_deg    # measured gripper angle after the lift
+geometry_msgs/Point cube_position   # base_link, the estimate the grasp used
+float32 cube_yaw_deg
+float32 wrist_roll_deg
+float32 jaw_tilt_deg      # jaws off vertical at the grasp
+float32 refine_shift_mm   # total close-up correction of the far estimate
+---
+# Feedback
+string phase
+string detail
+float32 gripper_deg
