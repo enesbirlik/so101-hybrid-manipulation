@@ -5,9 +5,10 @@ With the object (e.g. a 30 mm paper cube) held between the open jaws, for each t
   1. open to --start-deg and set the gripper's torque limit (/gripper_torque_controller/commands);
   2. close at --speed-deg-s towards --end-deg, logging commanded angle, measured angle, lag
      (commanded - measured, > 0 = the jaw is behind the command), load and current at --rate Hz;
-  3. contact = the lag rises more than --contact-lag-deg above its baseline (the lag was a
-     clearer signal than load at P 16, 2026-11-21); the contact angle is the measured angle where
-     the rise began;
+  3. contact = the lag (commanded - measured) drops more than --contact-lag-deg BELOW its
+     free-closing baseline: when closing, a blocked jaw stays above the command, so the lag goes
+     negative (2026-11-22: free -0.3..-0.5 deg, -1.2 deg within 0.5 s of touching a cube); the
+     contact angle is the measured angle where the drop began;
   4. squeeze: command contact - d for each d in --depths, hold --dwell-s, record the mean
      measured angle, lag, load and current over the last --sample-s;
   5. open to --start-deg again.
@@ -50,6 +51,9 @@ OUT_DIR = Path.home() / "so101_data" / "gripper"
 JAW_GAP_MM_AT_0 = 13.0     # 2026-11-21 ruler fit
 JAW_MM_PER_DEG = 1.35
 MIN_CMD_DEG = -10.0        # calibrated range_min of the gripper
+SQUEEZE_FLOOR_MM = 1.5     # never command a jaw gap narrower than the object minus this (crushed a
+                           # 30 mm paper cube on 2026-11-22 closing to -10 deg at full torque)
+LIMIT_TIMEOUT_S = 3.0      # the torque limit readback must match within this, or abort
 BASELINE_S = (1.5, 0.3)    # lag baseline: median over [now - 1.5 s, now - 0.3 s]
 ONSET_LAG_DEG = 0.3        # the contact began where the lag was last this close to the baseline
 OPEN_SPEED_DEG_S = 15.0
@@ -57,6 +61,11 @@ OPEN_SPEED_DEG_S = 15.0
 
 def expected_contact_deg(object_mm):
     return (object_mm - JAW_GAP_MM_AT_0) / JAW_MM_PER_DEG
+
+
+def floor_deg(object_mm):
+    """Narrowest gripper command allowed for an object of this width."""
+    return max(MIN_CMD_DEG, expected_contact_deg(object_mm - SQUEEZE_FLOOR_MM))
 
 
 class Squeeze(Node):
@@ -110,8 +119,17 @@ class Squeeze(Node):
             time.sleep(0.1)
         return False
 
-    def set_limit(self, value):
-        self.limit_pub.publish(Float64MultiArray(data=[float(value)]))
+    def set_limit(self, value, timeout=LIMIT_TIMEOUT_S):
+        """Publish the limit until the hardware's torque_limit state shows it (a single publish right
+        after creating the publisher is lost before discovery). Raises if it never applies."""
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            self.limit_pub.publish(Float64MultiArray(data=[float(value)]))
+            time.sleep(0.1)
+            state = self.snapshot()["torque_limit"]
+            if state is not None and abs(state - value) < 0.5:
+                return
+        raise RuntimeError(f"torque limit {value} not applied (state {self.snapshot()['torque_limit']}): not closing")
 
     def send(self, deg, secs):
         """Start a move to `deg` that takes `secs` (linear in time: one point, positions only)."""
@@ -188,9 +206,9 @@ def contact_detector(threshold):
         if now - samples[0]["t"] < BASELINE_S[0] or not base or samples[-1]["lag_deg"] is None:
             return None
         b = statistics.median(base)
-        if samples[-1]["lag_deg"] - b <= threshold:
+        if b - samples[-1]["lag_deg"] <= threshold:
             return None
-        onset = next((s for s in reversed(samples) if s["lag_deg"] is not None and s["lag_deg"] - b <= ONSET_LAG_DEG),
+        onset = next((s for s in reversed(samples) if s["lag_deg"] is not None and b - s["lag_deg"] <= ONSET_LAG_DEG),
                      samples[0])
         return {"baseline_lag_deg": b, "onset": onset, "detected": samples[-1]}
     return detect
@@ -220,7 +238,7 @@ def run_limit(node, log, args, limit):
               f"current {fmt(on['current_a'], '.0f', 1000)} mA; detected {det['t'] - on['t']:.2f} s later "
               f"at {det['pos_deg']:+.2f} deg")
         for depth in args.depths:
-            target = max(MIN_CMD_DEG, on["pos_deg"] - depth)
+            target = max(floor_deg(args.object_mm), on["pos_deg"] - depth)
             move(node, log, target, args.speed_deg_s, f"squeeze_{depth:g}", extra, settle=0.0)
             held, _ = sample_for(node, log, args.dwell_s, f"hold_{depth:g}", extra)
             tail = [s for s in held if s["t"] >= held[-1]["t"] - args.sample_s]
@@ -251,7 +269,8 @@ def main():
     parser.add_argument("--object-mm", type=float, default=30.0, help="object width, for the expected contact (default 30)")
     parser.add_argument("--start-deg", type=float, default=None,
                         help="open angle to start from (default: expected contact + 6 deg, at most 30)")
-    parser.add_argument("--end-deg", type=float, default=MIN_CMD_DEG, help="close no further than this (default -10)")
+    parser.add_argument("--end-deg", type=float, default=None,
+                        help="close no further than this (default and minimum: the angle for object width - 1.5 mm)")
     parser.add_argument("--speed-deg-s", type=float, default=2.0, help="closing speed (default 2)")
     parser.add_argument("--depths", type=depths, default=[1, 2, 3, 4], help="squeeze depths past contact, deg (default 1,2,3,4)")
     parser.add_argument("--torque-limits", type=limits, default=[1000],
@@ -265,8 +284,12 @@ def main():
     expected = expected_contact_deg(args.object_mm)
     if args.start_deg is None:
         args.start_deg = min(30.0, expected + 6.0)
-    if args.end_deg < MIN_CMD_DEG or args.end_deg >= args.start_deg or args.speed_deg_s <= 0:
-        parser.error(f"need {MIN_CMD_DEG} <= --end-deg < --start-deg and --speed-deg-s > 0")
+    floor = floor_deg(args.object_mm)
+    if args.end_deg is None:
+        args.end_deg = floor
+    if args.end_deg < floor or args.end_deg >= args.start_deg or args.speed_deg_s <= 0:
+        parser.error(f"need {floor:.1f} (object width - {SQUEEZE_FLOOR_MM} mm) <= --end-deg < --start-deg "
+                     "and --speed-deg-s > 0")
 
     rclpy.init()
     node = Squeeze()
