@@ -107,6 +107,10 @@ class ContactDetector:
     # trains the baseline. At torque limit 20 % the jaw trails a 12 deg/s ramp by > 1 deg right after
     # it starts, which counted as contact at 27 deg on 2026-11-22.
     ignore_above_deg: float = float("inf")
+    # Two-speed close (close_ramp): only samples commanded at or below this (the start of the slow
+    # part) train the running baseline, so the larger tracking lag of the fast part does not
+    # inflate it (an inflated baseline would make the contact show late).
+    baseline_below_deg: float = float("inf")
 
     def baseline(self, t: float):
         a, b = self.p.baseline_window_s
@@ -127,7 +131,8 @@ class ContactDetector:
         # until the running baseline exists the servo's tracking lag is unknown: compare with the
         # standing value and a wider threshold
         thr = self.p.lag_deg if warm else self.p.lag_deg * self.p.warmup_factor
-        self.hist.append((t, blocked, load))
+        if commanded_deg <= self.baseline_below_deg:
+            self.hist.append((t, blocked, load))
         if commanded_deg > self.ignore_above_deg:
             self.run = 0
             return None
@@ -153,6 +158,68 @@ def expected_contact_deg(edge_mm: float, gap_zero_mm: float = 13.0, gap_per_deg_
 def ramp_end_deg(expected: float, p: SoftGraspParams) -> float:
     """Where the closing ramp stops: at the floor (never lower, whatever the window says)."""
     return floor_deg(p)
+
+
+def close_ramp(start_deg: float, expected: float, p: SoftGraspParams, fast_speed_deg_s: float = 0.0,
+               slow_lead_deg: float = 3.5, min_s: float = 0.5):
+    """The closing command as [(angle deg, time s)], piecewise linear (sent without velocities on
+    the inner point, so the controller interpolates linearly):
+
+      start -> slow_from   at fast_speed_deg_s, only above slow_from = expected + window + slow_lead_deg
+                           (contact detection ignores everything above expected + window anyway)
+      slow_from -> floor   at closing_speed_deg_s: the whole contact window is crossed slowly
+
+    It ends at the floor and never commands below it. fast_speed_deg_s <= closing_speed_deg_s, or a
+    start at or below slow_from, gives the single slow ramp. Returns (points, slow_from)."""
+    floor = floor_deg(p)
+    slow = max(1e-3, p.closing_speed_deg_s)
+    slow_from = max(floor, expected + p.window_deg + max(0.0, slow_lead_deg))
+    pts, t, cur = [], 0.0, max(start_deg, floor)
+    if fast_speed_deg_s > slow and cur > slow_from + 1e-6:
+        t = (cur - slow_from) / fast_speed_deg_s
+        pts.append((slow_from, t))
+        cur = slow_from
+    else:
+        slow_from = max(cur, floor)
+    t += max(min_s if not pts else 0.0, (cur - floor) / slow)
+    pts.append((floor, max(t, min_s)))
+    return pts, slow_from
+
+
+def ramp_trajectory(start_deg: float, pts, p: SoftGraspParams, step_deg: float = 1.0, last_stretch: float = 1.5):
+    """close_ramp points as trajectory points [(angle deg, velocity deg/s, time s)] with EXPLICIT
+    velocities, so the controller's cubic segments cannot overshoot (positions only, the inner
+    points were interpolated with an overshoot below the floor on mock hardware):
+
+    - the slow part is cut into `step_deg` pieces whose inner points carry the slow speed: the
+      cubic between two points with the segment's own mean speed at both ends is a straight line;
+    - the last piece ends at rest at the floor and takes last_stretch times longer: a cubic from
+      v to 0 whose mean is v/last_stretch is monotonic (no overshoot) and peaks at ~0.9 v;
+    - the fast part (if any) ends at slow_from with the slow speed, monotonic as well.
+    Every angle is >= the floor and the angles decrease monotonically."""
+    floor = floor_deg(p)
+    slow = max(1e-3, p.closing_speed_deg_s)
+    out = []
+    t0 = 0.0
+    cur = max(start_deg, floor)
+    if len(pts) == 2:
+        a, t = pts[0]
+        out.append((a, -slow, t))
+        cur, t0 = a, t
+    if cur - floor < 1e-6:
+        return out + [(floor, 0.0, max(t0 + 0.1, pts[-1][1]))]
+    n = max(1, int(math.ceil((cur - floor) / step_deg - 1e-9)))
+    seg = (cur - floor) / n
+    t = t0
+    for k in range(1, n + 1):
+        a = cur - k * seg
+        last = k == n
+        from_rest = k == 1 and len(pts) == 1          # no fast part: the first piece starts at rest
+        t += seg / slow * (last_stretch if (last or from_rest) else 1.0)
+        out.append((floor if last else a, 0.0 if last else -slow, t))
+    if n == 1 and len(pts) == 1 and out[-1][2] < pts[-1][1]:
+        out[-1] = (floor, 0.0, pts[-1][1])
+    return out
 
 
 def in_window(contact_deg: float, expected: float, p: SoftGraspParams) -> bool:

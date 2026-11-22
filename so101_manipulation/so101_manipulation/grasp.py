@@ -340,3 +340,197 @@ def default_views(model: ArmModel, T_gc, pans_deg):
     if T_gc is not None:
         sets += [("close", view_pose(model, T_gc, 0.17, 0.18)), ("far", view_pose(model, T_gc, 0.33))]
     return [(f"{tag}{p:+.0f}", np.array([math.radians(p), *v, 0.0])) for tag, v in sets for p in pans_deg]
+
+
+# --- what the wrist camera sees (overview pose, aimed views) ----------------------------------
+
+@dataclass
+class FisheyeCamera:
+    """Equidistant (OpenCV fisheye) model of the wrist camera at its calibration size."""
+    K: np.ndarray
+    D: np.ndarray
+    width: int
+    height: int
+
+    def project(self, P_cam):
+        """(N,2) pixels and (N,) angle off the optical axis [rad] of points in the optical frame."""
+        P = np.atleast_2d(np.asarray(P_cam, float))
+        x, y, z = P[:, 0], P[:, 1], P[:, 2]
+        r = np.hypot(x, y)
+        th = np.arctan2(r, z)
+        k = self.D
+        thd = th * (1 + k[0] * th ** 2 + k[1] * th ** 4 + k[2] * th ** 6 + k[3] * th ** 8)
+        s = np.where(r > 1e-9, thd / np.maximum(r, 1e-9), 1.0)
+        uv = np.c_[self.K[0, 0] * x * s + self.K[0, 2], self.K[1, 1] * y * s + self.K[1, 2]]
+        return uv, th
+
+
+def load_fisheye(path) -> FisheyeCamera:
+    import yaml
+    with open(path) as f:
+        d = yaml.safe_load(f)
+    return FisheyeCamera(K=np.array(d["camera_matrix"]["data"], float).reshape(3, 3),
+                         D=np.array(d["distortion_coefficients"]["data"], float)[:4],
+                         width=int(d["image_width"]), height=int(d["image_height"]))
+
+
+# the work area the overview has to cover: cube centres 15-30 cm out, +-15 cm to the side
+WORK_AREA = ((0.15, 0.30), (-0.15, 0.15))
+JAW_LINKS = ("gripper_link", "moving_jaw_so101_v1_link")
+
+
+def camera_pose(model: ArmModel, T_gc: np.ndarray, q_arm) -> np.ndarray:
+    """base_link -> wrist_camera_optical_frame (z = optical axis)."""
+    return model.hand(q_arm) @ T_gc
+
+
+def visible(model: ArmModel, T_gc: np.ndarray, cam: FisheyeCamera, q_arm, grip, points, margin_px=10.0,
+            marker_m=0.022, min_marker_px=30.0, max_off_axis_deg=85.0, min_view_cos=0.3):
+    """Bool mask: the top face of a cube whose top centre is at each of `points` (base_link) is
+    seen by the wrist camera at arm pose q_arm, gripper angle `grip` [rad]:
+
+    - inside the image (with `margin_px`) and less than max_off_axis_deg off the optical axis,
+    - not behind the jaws (projected convex hulls of gripper_link and the moving jaw: a slight
+      over-estimate of what they hide),
+    - the top marker (`marker_m`) at least `min_marker_px` wide at the calibration size (1280 px;
+      the detector runs at half of it, so 30 -> 15 px) and seen at a view cosine >= min_view_cos.
+    """
+    from scipy.spatial import Delaunay
+    P = np.atleast_2d(np.asarray(points, float))
+    T = camera_pose(model, T_gc, q_arm)
+    R, o = T[:3, :3], T[:3, 3]
+
+    def proj(X):
+        return cam.project((X - o) @ R)[0]
+
+    pc = (P - o) @ R
+    uv, th = cam.project(pc)
+    ok = ((pc[:, 2] > 0) & (uv[:, 0] > margin_px) & (uv[:, 0] < cam.width - margin_px)
+          & (uv[:, 1] > margin_px) & (uv[:, 1] < cam.height - margin_px) & (th < math.radians(max_off_axis_deg)))
+    ray = o - P
+    ok &= ray[:, 2] / np.maximum(np.linalg.norm(ray, axis=1), 1e-9) >= min_view_cos
+    h = marker_m / 2
+    side = np.sqrt(np.linalg.norm(proj(P + [h, 0, 0]) - proj(P - [h, 0, 0]), axis=1)
+                   * np.linalg.norm(proj(P + [0, h, 0]) - proj(P - [0, h, 0]), axis=1))
+    ok &= side >= min_marker_px
+    q = model.qdict(q_arm, grip)
+    for name, chain, V in model.links:
+        if name not in JAW_LINKS:
+            continue
+        Tl = chain.forward(q)
+        Vw = V @ Tl[:3, :3].T + Tl[:3, 3]
+        Vw = Vw[(Vw - o) @ R[:, 2] > 0.005]       # in front of the camera
+        if len(Vw) >= 4:
+            ok &= Delaunay(proj(Vw)).find_simplex(uv) < 0
+    return ok
+
+
+def area_grid(area=WORK_AREA, step=0.01, z=0.0):
+    """Points over the area ((x0, x1), (y0, y1)) at height z, and the grid shape (nx, ny)."""
+    (x0, x1), (y0, y1) = area
+    xs = np.arange(x0, x1 + 1e-6, step)
+    ys = np.arange(y0, y1 + 1e-6, step)
+    return np.array([[x, y, z] for x in xs for y in ys]), (len(xs), len(ys))
+
+
+def view_coverage(model: ArmModel, T_gc, cam: FisheyeCamera, q_arm, grip, area=WORK_AREA, step=0.01,
+                  cube_edge=0.03, **kw):
+    """(fraction of the cube positions in `area` whose top face is seen, mask (nx, ny), grid)."""
+    G, shape = area_grid(area, step, model.table_z + cube_edge)
+    m = visible(model, T_gc, cam, q_arm, grip, G, **kw)
+    return float(m.mean()), m.reshape(shape), G
+
+
+def overview_pose(model: ArmModel, T_gc, cam: FisheyeCamera, grip=math.radians(12.0), d=0.22, H=0.28,
+                  area=WORK_AREA, roll_limit_deg=85.0, wflex_margin_deg=5.0, min_camera_h=0.24,
+                  min_clearance=0.06, iters=600, seed=0):
+    """Arm pose [rad] from which ONE wrist camera image covers as much of `area` as it can.
+
+    Start: the camera ~H above the table looking straight down at reach d (least squares like
+    view_pose, with pan and roll free: the camera sits beside the jaws, so looking straight down
+    needs a large wrist_roll). Then a seeded random local search on the coverage itself (the jaws
+    hide part of the image, which the start does not know about). Kept: |roll| <= roll_limit_deg,
+    wrist_flex wflex_margin_deg inside its limits, camera >= min_camera_h above the table, the
+    arm's lowest point >= min_clearance above it. Deterministic for a given seed.
+    Returns (q, coverage). Takes ~1 min: run it offline, the node uses `overview_poses_deg`."""
+    lo = np.array([JOINT_LIMITS[n][0] for n in ARM])
+    hi = np.array([JOINT_LIMITS[n][1] for n in ARM])
+    lo[4], hi[4] = -math.radians(roll_limit_deg), math.radians(roll_limit_deg)
+    lo[3] += math.radians(wflex_margin_deg)
+    hi[3] -= math.radians(wflex_margin_deg)
+
+    def res(x):
+        T = camera_pose(model, T_gc, x)
+        o, z = T[:3, 3], T[:3, 2]
+        hit = o + (model.table_z - o[2]) / min(z[2], -1e-3) * z
+        return [(hit[0] - d) * 100, hit[1] * 100, (o[2] - model.table_z - H) * 100, (z[2] + 1) * 20]
+    best = None
+    for s in ([0.0, -0.6, 0.3, 1.5, -1.4], [0.0, -0.3, 0.0, 1.5, -1.2], [0.0, -0.6, 0.3, 1.5, 1.4]):
+        r = least_squares(res, np.clip(s, lo + 1e-3, hi - 1e-3), bounds=(lo, hi))
+        if best is None or r.cost < best.cost:
+            best = r
+
+    def score(q):
+        T = camera_pose(model, T_gc, q)
+        if T[2, 3] - model.table_z < min_camera_h or model.lowest(q, grip)[1] < min_clearance:
+            return -1.0
+        return view_coverage(model, T_gc, cam, q, grip, area)[0]
+    q = np.clip(best.x, lo, hi)
+    s = score(q)
+    rng = np.random.default_rng(seed)
+    for k in range(iters):
+        sigma = math.radians(4.0 if k < iters // 2 else 1.5)
+        c = np.clip(q + rng.normal(0.0, sigma, 5), lo, hi)
+        sc = score(c)
+        if sc > s:
+            q, s = c, sc
+    return q, s
+
+
+def search_order(model: ArmModel, T_gc, views, overviews, hint=None, aimed_q=None):
+    """The search's view list [(name, q)]: the view aimed at the cube's last known centre `hint`
+    (if any), then the overview pose(s), then `views` sorted by the angle between their optical
+    axis and `hint` (unsorted without a hint or a hand-eye transform)."""
+    views = list(views)
+    if hint is not None and T_gc is not None:
+        hint = np.asarray(hint, float)
+
+        def off_axis(v):
+            T = camera_pose(model, T_gc, v[1])
+            d = hint - T[:3, 3]
+            return math.acos(float(np.clip(T[:3, 2] @ d / np.linalg.norm(d), -1, 1)))
+        views.sort(key=off_axis)
+    first = []
+    if aimed_q is not None and hint is not None:
+        first.append((f"aimed at ({hint[0] * 100:.0f}, {hint[1] * 100:.0f}) cm", np.asarray(aimed_q, float)))
+    return first + list(overviews) + views
+
+
+def aim_view_pose(model: ArmModel, T_gc, target, H=0.22, roll_limit=math.radians(85.0), seed=None,
+                  wflex_margin_deg=5.0):
+    """Arm pose [rad] with the camera ~H above the table, looking down as far as it can, its
+    optical axis through `target` (x, y[, z]) in base_link; wrist_roll pulled towards 0."""
+    target = np.asarray(target, float)
+    z_t = float(target[2]) if len(target) > 2 else model.table_z
+    lo = np.array([JOINT_LIMITS[n][0] for n in ARM])
+    hi = np.array([JOINT_LIMITS[n][1] for n in ARM])
+    lo[4], hi[4] = -roll_limit, roll_limit
+    lo[3] += math.radians(wflex_margin_deg)
+    hi[3] -= math.radians(wflex_margin_deg)
+
+    def res(x):
+        T = camera_pose(model, T_gc, x)
+        o, z = T[:3, 3], T[:3, 2]
+        hit = o + (z_t - o[2]) / min(z[2], -1e-3) * z
+        return [(hit[0] - target[0]) * 100, (hit[1] - target[1]) * 100, (o[2] - model.table_z - H) * 100,
+                (z[2] + 1) * 5, x[4] * 0.5]
+    pan = math.atan2(target[1], target[0])
+    seeds = [[pan, -0.4, 0.2, 1.5, 0.0], [pan, -0.6, 0.3, 1.5, -1.2], [pan, -0.6, 0.3, 1.5, 1.2]]
+    if seed is not None:
+        seeds.insert(0, list(seed))
+    best = None
+    for s in seeds:
+        r = least_squares(res, np.clip(s, lo + 1e-3, hi - 1e-3), bounds=(lo, hi))
+        if best is None or r.cost < best.cost:
+            best = r
+    return np.clip(best.x, lo, hi)
