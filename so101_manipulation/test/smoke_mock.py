@@ -13,7 +13,12 @@ It starts its own FAKE cube publisher and pick_place node per scenario (and stop
   pick_place simulated cube blocking the jaws at 12.5 deg (where the real arm held a paper cube): PickCube succeeds, PlaceCube puts it down
   search     the cube is only "visible" from a pan away from the start: the view sweep finds it,
              and a far-view bias of 6 mm is corrected by the close-up refinement
-  reach      cube 40 cm out: rejected in approach with a reach message
+  reach      cube 50 cm out: rejected in approach with a reach message
+  far        cube 34 cm out (beyond vertical reach): the tilt sweep leans the jaws out, the descent and
+             the lift run along the jaw axis, PlaceCube puts the tilted hold down flat; ~/reach is latched
+  far40      the same at 40 cm (a large lean; hover-only + pick)
+  near       cube 12 cm out, yaw 45: inside vertical reach no more, the jaws lean IN (pick + place)
+  near11     cube 11 cm out: a grasp or a clear reach message, never a bad pose
   cancel     cancel during the approach: the goal ends canceled, the arm stops
   overview   ~/overview (cube seen through the fisheye model, fov_check): JSON answer, ~/state, then a
              pick that skips the search (the cube is fresh and stable)
@@ -77,6 +82,10 @@ class Driver(Node):
                                  QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.overview = self.create_client(Trigger, "/cube_pick_place/overview")
         self.state = None
+        self.reach = None
+        from std_msgs.msg import Float32MultiArray
+        self.create_subscription(Float32MultiArray, "/cube_pick_place/reach", lambda m: setattr(self, "reach", list(m.data)),
+                                 QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(String, "/cube_pick_place/state", lambda m: setattr(self, "state", json.loads(m.data)),
                                  QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
@@ -268,6 +277,45 @@ def main():
         assert st == S.STATUS_ABORTED and r.failed_phase == "approach" and "reach" in r.message, r.message
         return True, r.message[:120]
 
+    def far(x, place_xy):
+        def run():
+            st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="cube_2"))
+            assert st == S.STATUS_SUCCEEDED, f"pick status {st}: {r.message}"
+            assert r.jaw_tilt_deg > 3.0, f"jaw tilt {r.jaw_tilt_deg:.1f} deg at {x * 100:.0f} cm"
+            assert abs(r.wrist_roll_deg) <= 90
+            approach = [t for t in d.details if "lean" in t and "outward" in t]
+            assert approach, d.details
+            floor = (30.0 - 1.5 - 13.0) / 1.35
+            assert d.min_grip_cmd >= math.radians(floor) - 1e-6
+            rows = d.reach
+            assert rows and len(rows) % 5 == 0, rows
+            st2, r2, ph2 = d.call(d.place, PlaceCube.Goal(x=place_xy[0], y=place_xy[1], on_cube_id="",
+                                                          yaw_deg=float("nan")))
+            assert st2 == S.STATUS_SUCCEEDED, f"place status {st2}: {r2.message}"
+            assert math.hypot(r2.placed_position.x - place_xy[0], r2.placed_position.y - place_xy[1]) < 0.003, \
+                r2.placed_position
+            far_max = max(rows[k + 2] for k in range(0, len(rows), 5) if rows[k + 2] == rows[k + 2])
+            return True, (f"tilt {r.jaw_tilt_deg:.1f} deg, roll {r.wrist_roll_deg:.0f}: {approach[0]}; "
+                          f"{r.message.split('|')[-1].strip()}; place: {r2.message}; ~/reach far max {far_max * 100:.0f} cm")
+        return run
+
+    def near():
+        st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="cube_2"))
+        assert st == S.STATUS_SUCCEEDED, f"pick status {st}: {r.message}"
+        lean = [t for t in d.details if "lean" in t and "inward" in t]
+        assert lean and abs(r.wrist_roll_deg) <= 90, d.details
+        st2, r2, ph2 = d.call(d.place, PlaceCube.Goal(x=0.20, y=0.0, on_cube_id="", yaw_deg=float("nan")))
+        assert st2 == S.STATUS_SUCCEEDED, f"place status {st2}: {r2.message}"
+        return True, f"tilt {r.jaw_tilt_deg:.1f} deg, roll {r.wrist_roll_deg:.0f}: {lean[0]}; place: {r2.message}"
+
+    def near11():
+        st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="cube_2"))
+        if st == S.STATUS_SUCCEEDED:
+            assert abs(r.wrist_roll_deg) <= 90
+            return True, f"picked: tilt {r.jaw_tilt_deg:.1f} deg, roll {r.wrist_roll_deg:.0f}"
+        assert st == S.STATUS_ABORTED and r.failed_phase == "approach" and "reach" in r.message, r.message
+        return True, f"rejected cleanly: {r.message[:300]}"
+
     def cancel():
         st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2"), cancel_after_phase="approach")
         assert st == S.STATUS_CANCELED, f"status {st}: {r.message}"
@@ -293,7 +341,11 @@ def main():
     scenario("pick_place", base, {"sim_contact_deg": 12.5}, pick_place)
     scenario("search", {"x": 0.20, "y": -0.12, "yaw_deg": -30.0, "visible_cone_deg": 10.0, "far_bias_mm": "[6.0, 0.0]"},
              {}, search)
-    scenario("reach", {"x": 0.40, "y": 0.0, "yaw_deg": 0.0}, {}, reach)
+    scenario("reach", {"x": 0.50, "y": 0.0, "yaw_deg": 0.0}, {}, reach)
+    scenario("far", {"x": 0.34, "y": 0.0, "yaw_deg": 0.0}, {"sim_contact_deg": 12.5}, far(0.34, (0.30, -0.06)))
+    scenario("far40", {"x": 0.40, "y": 0.0, "yaw_deg": 0.0}, {"sim_contact_deg": 12.5}, far(0.40, (0.34, 0.0)))
+    scenario("near", {"x": 0.12, "y": 0.0, "yaw_deg": 45.0}, {"sim_contact_deg": 12.5}, near)
+    scenario("near11", {"x": 0.11, "y": 0.0, "yaw_deg": 0.0}, {"sim_contact_deg": 12.5}, near11)
     scenario("cancel", base, {}, cancel)
     scenario("overview", {"x": 0.27, "y": -0.10, "yaw_deg": 10.0, "fov_check": "true"}, {}, overview)
     scenario("memory", {"x": 0.20, "y": 0.08, "yaw_deg": -30.0, "visible_cone_deg": 10.0}, {}, memory)

@@ -38,10 +38,11 @@ from so101_manipulation_interfaces.action import PickCube, PlaceCube
 from . import soft_grasp as sg
 from .cube_tracker import FrameClock, cube_key, make_cube_tracker
 from .kinematics import ARM
-from .grasp import (WEIGHT_TILTED, GraspPlanner, aim_view_pose, camera_pose, default_views, load_fisheye,
+from .grasp import (WEIGHT_TILTED, contact_watch, GraspPlanner, aim_view_pose, camera_pose, default_views, load_fisheye,
                     load_hand_eye, search_order, view_coverage, visible)
 from .hooks import GripperTorqueLimitHook
 from .kinematics import ArmModel, perception_config_dir
+from .reach_map import publish_reach
 from .motion import Canceled, Motion, MotionError
 from .timing import PhaseTimer
 
@@ -85,8 +86,15 @@ PARAMS = {
     "descend_step": (0.01, "height step of the descent"),
     "gap_fraction": (0.5, "where the cube centre goes between the fixed (0) and moving (1) jaw tip; "
                           "0.5 = gap midpoint"),
-    "allow_tilt": (True, "allow a tilted approach (<= max_tilt_deg) beyond vertical reach"),
-    "max_tilt_deg": (15.0, "largest jaw tilt of the fallback"),
+    "allow_tilt": (True, "allow a tilted approach (<= max_tilt_deg) where vertical jaws do not reach"),
+    "max_tilt_deg": (45.0, "largest jaw lean of the tilt sweep (far cubes lean out, near cubes lean in)"),
+    "tilt_step_deg": (5.0, "lean step of the tilt sweep; the smallest lean that works is used"),
+    "max_close_elev_deg": (20.0, "tilt sweep: closing direction at most this far off horizontal (jaw pads vs the "
+                                 "cube's vertical faces)"),
+    "tilt_contact_joint": ("auto", "contact joint for TILTED grasps: 'auto' = the joint a push against the jaw axis "
+                                   "deflects most (Jacobian), or a joint name; vertical grasps use contact_joint"),
+    "reach_file": ("", "reach table published on ~/reach (python3 -m so101_manipulation.reach_map); "
+                       "'' = config/reach.yaml of this package"),
     "vertical_tol_deg": (3.0, "jaws count as vertical within this"),
     "ik_tolerance_mm": (2.0, "largest IK position error accepted"),
     "roll_limit_deg": (90.0, "|wrist_roll| never beyond this (camera cable)"),
@@ -178,7 +186,9 @@ class PickPlaceNode(Node):
         self.roll_limit = math.radians(p.roll_limit_deg)
         self.planner = GraspPlanner(self.model, roll_limit=self.roll_limit, ik_tol_mm=p.ik_tolerance_mm,
                                     vertical_tol_deg=p.vertical_tol_deg, max_tilt_deg=p.max_tilt_deg,
-                                    allow_tilt=p.allow_tilt, min_clearance=p.min_final_clearance_mm / 1000)
+                                    allow_tilt=p.allow_tilt, min_clearance=p.min_final_clearance_mm / 1000,
+                                    tilt_step_deg=p.tilt_step_deg, max_close_elev_deg=p.max_close_elev_deg)
+        self.reach_pub = publish_reach(self, p)     # HOOK(reach): latched ~/reach for the dashboard
         self.planner.roll_map()
         try:
             T_gc = load_hand_eye(perception_config_dir() / "wrist_camera_hand_eye.yaml")
@@ -569,7 +579,7 @@ class PickPlaceNode(Node):
         p = self.p
         plan, msg = self.planner.plan_cube(est.centre[:2], est.yaw, math.radians(p.open_deg), p.hover_height + base,
                                            p.hover_min_height + base, p.grasp_tip_height + base, p.descend_step,
-                                           p.gap_fraction, prefer_roll=prefer_roll)
+                                           p.gap_fraction, prefer_roll=prefer_roll, cube_bottom=base, edge=self.edge)
         if plan is None:
             raise Fail("approach", msg)
         return plan
@@ -616,12 +626,14 @@ class PickPlaceNode(Node):
         descent point nearest to where the hand ended; raises on contact unless stop_on_contact_ok
         (place: contact = the cube is down)."""
         p = self.p
-        j = p.contact_joint
+        j, sgn = p.contact_joint, 1.0
+        if plan.line is not None and p.tilt_contact_joint:      # HOOK(tilt): contact joint of a tilted grasp
+            j, sgn = contact_watch(self.model, plan, p.tilt_contact_joint)
         # at the hover, in free space: take out the servos' static error, and reuse it below
         self.arm_bias = self.trim(plan.hover.q)
         self.feedback("descend", "hover trim " + ", ".join(f"{n.split('_')[1]} {math.degrees(b):+.1f}"
                                                          for n, b in zip(ARM, self.arm_bias) if abs(b) > 1e-4))
-        base = self.motion.mean_lag(j, int(p.descend_lag_samples))
+        base = sgn * self.motion.mean_lag(j, int(p.descend_lag_samples))
         # Gravity alone drifts the lag slowly as the arm goes down (+1.1 deg over 6 cm at servo P 32,
         # 2026-11-22); a jaw landing on something lifts it at once. One move instead of 1 cm steps
         # (stop, settle, measure: ~8 s and stick-slip at every start).
@@ -629,7 +641,7 @@ class PickPlaceNode(Node):
 
         def monitor(samples):
             for s_ in samples:
-                ex = math.degrees(s_.ref[j] - s_.fb[j]) - base
+                ex = sgn * math.degrees(s_.ref[j] - s_.fb[j]) - base
                 peak[0] = max(peak[0], ex)
                 if ex > p.descend_contact_lag_deg:
                     return True
@@ -648,7 +660,10 @@ class PickPlaceNode(Node):
                 self.feedback("descend", msg + ": stopping here")
                 return i
             self.feedback("descend", msg + ": backing up")
-            self.motion.run("arm", [plan.hover.q], p.lift_speed, bias=self.arm_bias)
+            if plan.line is not None:       # HOOK(tilt): back out along the jaw axis
+                self.continuous(plan.retreat_poses(i, exit=False), p.lift_speed, bias=self.arm_bias)
+            else:
+                self.motion.run("arm", [plan.hover.q], p.lift_speed, bias=self.arm_bias)
             raise Fail("descend", f"something under the jaws: {msg}")
         if not res.ok:
             raise Fail("descend", f"arm move failed: {res.error}")
@@ -733,7 +748,7 @@ class PickPlaceNode(Node):
         self.feedback(phase, f"{why}: opening and backing up")
         self.gripper_to(self.p.open_deg, self.p.open_speed_deg_s)
         self.hook.restore()
-        self.continuous([r.q for r in plan.descent[::-1][1:]] + [plan.hover.q], self.p.lift_speed, bias=self.arm_bias)
+        self.continuous(plan.retreat_poses(), self.p.lift_speed, bias=self.arm_bias)   # tilted: along the line, then up
 
     def execute_pick(self, gh):
         res = PickCube.Result()
@@ -821,12 +836,16 @@ class PickPlaceNode(Node):
                     res.contact_angle_deg = float(self.grip_measured_deg())
                 self.holding = {"cube": cube, "hold_deg": hold, "contact_deg": res.contact_angle_deg,
                                 "grasp_h": p.grasp_tip_height, "roll": plan.roll}
+                if plan.line is not None:
+                    # HOOK(tilt): a tilted hold is placed with the same hand orientation (lean + roll)
+                    self.holding.update(lean=plan.lean, cube_in_hand=plan.cube_in_hand,
+                                        grasp_h=plan.grasp_h - self.surface_base(est))
                 phase = self.enter("lift")
                 self.remember(cube, None)        # in the jaws now, not where it was seen
                 self.feedback("lift", f"to {plan.hover_h * 100:.1f} cm")
                 # one continuous move back up through the descent points (no stop at each)
-                r = self.continuous([x.q for x in plan.descent[::-1][1:]] + [plan.hover.q], p.lift_speed,
-                                    bias=self.arm_bias)
+                # tilted grasps: back out along the jaw axis first, then up (retreat_poses)
+                r = self.continuous(plan.retreat_poses(), p.lift_speed, bias=self.arm_bias)
                 if not r.ok:
                     raise Fail("lift", f"lift failed: {r.error}")
                 time.sleep(0.3)
@@ -899,6 +918,16 @@ class PickPlaceNode(Node):
             hover_h = release_h + (p.hover_height - p.grasp_tip_height)
 
             def plan_at(xy, yaws_):
+                if held.get("lean") is not None:
+                    # HOOK(tilt): same lean and roll as at the grasp, so the cube stays flat; its yaw
+                    # follows from the pan (no closing-direction choice)
+                    pl, why = self.planner.plan_place_held(
+                        xy, surface + self.edge / 2 + p.release_gap, held["cube_in_hand"], held["lean"], held["roll"],
+                        math.radians(grip), p.hover_height - p.grasp_tip_height, p.descend_step)
+                    if pl is None:
+                        raise Fail("carry", f"no place pose at ({xy[0] * 100:.1f}, {xy[1] * 100:.1f}) cm for a cube "
+                                            f"held at {math.degrees(held['lean']):+.0f} deg lean: {why}")
+                    return pl
                 heights = list(np.arange(hover_h, release_h + 0.03, -0.005))
                 pl, reasons = self.planner.plan_vertical(xy, yaws_ if yaws_ is not None else [None], math.radians(grip),
                                                          heights, release_h, p.descend_step, 0.5,
@@ -941,6 +970,9 @@ class PickPlaceNode(Node):
             q_rel = plan.descent[i].q
             tip = self.model.tip(q_rel)
             centre = tip + self.model.gap_offset(q_rel, math.radians(grip), 0.5)
+            if plan.cube_in_hand is not None:
+                Th = self.model.hand(q_rel)
+                centre = Th[:3, :3] @ plan.cube_in_hand + Th[:3, 3]
             res.placed_position = Point(x=float(centre[0]), y=float(centre[1]),
                                         z=float(self.model.table_z + surface + self.edge / 2))
             self.holding = None
@@ -949,8 +981,7 @@ class PickPlaceNode(Node):
             phase = self.enter("retreat")
             self.feedback("retreat", "up to the hover")
             # one continuous move up, with the bias the descent used
-            back = [r.q for r in plan.descent[:i][::-1]] + [plan.hover.q]
-            r = self.continuous(back, p.lift_speed, bias=self.arm_bias)
+            r = self.continuous(plan.retreat_poses(i), p.lift_speed, bias=self.arm_bias)
             if not r.ok:
                 raise Fail("retreat", r.error)
             res.success = True
