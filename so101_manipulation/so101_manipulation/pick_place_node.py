@@ -873,6 +873,12 @@ class PickPlaceNode(Node):
                 # e.g. after a restart of this node with a cube still between the jaws: trust the grip
                 # itself (same rule as the verify after a pick), never an uncertain one
                 g = self.grip_measured_deg()
+                # only closed jaws can hold a cube: open jaws (29.6 deg) are far "above empty" too, and
+                # were taken for a held cube once (2026-11-22)
+                top = self.expected_contact + self.sg.window_deg
+                if g > top:
+                    raise Fail("setup", f"not holding a cube (PickCube first): jaws open at {g:.1f} deg "
+                                        f"(a held {self.p.cube_edge_mm:.0f} mm cube keeps them below {top:.1f})")
                 state, why = sg.grip_state(g, self.floor_deg, self.sg,
                                            self.motion.gripper_current_ma(self.p.current_window_s))
                 if state != sg.HELD:
