@@ -870,7 +870,7 @@ void RobotView::update_cubes(const LinkPoses & poses)
   if (root == "base_link") {
     for (const auto & [id, t] : in_tracked_) {
       obs[id] = Obs{{t.position[0], t.position[1], t.position[2]}, t.yaw, t.edge,
-        t.seen >= 0 ? std::max(0.0, now - t.seen) : 0.0, t.score >= 0.5f};
+        t.received >= 0 ? std::max(0.0, now - t.seen) : 0.0, t.score >= 0.5f};   // (seen < 0 is valid early on)
     }
   }
   for (const auto & [id, m] : in_markers_) {
@@ -1027,11 +1027,31 @@ void RobotView::update_cubes(const LinkPoses & poses)
     const Color col = cube_color(id);
     vc.marker.rgba = {col.r / 255.0f, col.g / 255.0f, col.b / 255.0f, vc.alpha};
     vc.marker.label = id >= 0 ? "K" + std::to_string(id) : "cube";
+    t.last = vc;
     cubes.push_back(vc);
   }
-  for (auto it = tracks_.begin(); it != tracks_.end(); ) {   // gone from every source
+  // gone from every source (dropped from the tracker's memory, or a held cube without a pose):
+  // fade out where it was last drawn, then forget it
+  for (auto it = tracks_.begin(); it != tracks_.end(); ) {
     const bool shown = std::any_of(cubes.begin(), cubes.end(), [&](const ViewCube & c) {return c.index == it->first;});
-    it = shown ? std::next(it) : tracks_.erase(it);
+    if (shown) {
+      ++it;
+      continue;
+    }
+    CubeTrack & t = it->second;
+    t.alpha -= t.alpha * k_fade;
+    if (t.alpha < 0.02f) {
+      it = tracks_.erase(it);
+      continue;
+    }
+    ViewCube vc = t.last;
+    vc.alpha = t.alpha;
+    vc.marker.rgba[3] = t.alpha;
+    if (vc.state == CubeState::Live) {
+      vc.state = CubeState::Remembered;
+    }
+    cubes.push_back(vc);
+    ++it;
   }
   cubes_.swap(cubes);
 }
@@ -1220,21 +1240,56 @@ void RobotView::draw_table_labels(ImVec2 origin) const
 
 void RobotView::draw_pick_place_3d() const
 {
-  // the reach ring: where the pick node can put a cube down; brighter while a cube is held
+  // the reach band: where the pick node can grasp / put down a cube, per pan from its reach table
+  // (the "every yaw" band clear, the "some yaw" band fainter), or the fixed ring without one;
+  // brighter while a cube is held
   const float a = holding_ ? 0.55f : 0.24f;
-  const Color ring = theme::to_raylib(ImVec4(theme::OK.x, theme::OK.y, theme::OK.z, a));
-  const Color spoke = theme::to_raylib(ImVec4(theme::OK.x, theme::OK.y, theme::OK.z, a * 0.4f));
+  const ImVec4 & ok = theme::OK;
   const float z = table_top_ + 0.001f;
-  rlPushMatrix();
-  rlTranslatef(0.0f, 0.0f, z);
-  DrawCircle3D(Vector3Zero(), REACH_MIN_M, Vector3{1, 0, 0}, 0.0f, ring);
-  DrawCircle3D(Vector3Zero(), REACH_MAX_M, Vector3{1, 0, 0}, 0.0f, ring);
-  for (int i = 0; i < 24; ++i) {   // light hatching between the circles
-    const float t = i * 2.0f * PI / 24;
-    DrawLine3D(Vector3{REACH_MIN_M * std::cos(t), REACH_MIN_M * std::sin(t), 0},
-      Vector3{REACH_MAX_M * std::cos(t), REACH_MAX_M * std::sin(t), 0}, spoke);
+  const bool table = !in_reach_.rows.empty();
+  const float pan0 = table ? in_reach_.rows.front().pan_deg : -180.0f;
+  const float pan1 = table ? in_reach_.rows.back().pan_deg : 180.0f;
+  const int steps = std::max(8, static_cast<int>((pan1 - pan0) / 2.5f));
+  const auto at = [z](float pan_deg, float r) {
+      const float t = pan_deg * DEG2RAD;
+      return Vector3{r * std::cos(t), r * std::sin(t), z};
+    };
+  rlDrawRenderBatchActive();
+  rlDisableDepthMask();
+  for (int pass = 0; pass < (table ? 2 : 1); ++pass) {
+    const bool every = pass == 1 || !table;
+    const float k = every ? 1.0f : 0.45f;   // the some-yaw band fainter
+    const Color fill = theme::to_raylib(ImVec4(ok.x, ok.y, ok.z, a * (every ? 0.28f : 0.14f)));
+    const Color edge = theme::to_raylib(ImVec4(ok.x, ok.y, ok.z, a * k));
+    float pn = 0, pf = 0;
+    bool prev = false;
+    for (int i = 0; i <= steps; ++i) {
+      const float pan = pan0 + (pan1 - pan0) * i / steps;
+      float n = 0, f = 0;
+      const bool ok_here = reach_band(in_reach_, pan, every, n, f);
+      if (ok_here && prev) {
+        const float pp = pan0 + (pan1 - pan0) * (i - 1) / steps;
+        rlBegin(RL_TRIANGLES);
+        quad(at(pp, pn), at(pp, pf), at(pan, f), at(pan, n), fill);   // counter-clockwise from above
+        rlEnd();
+        DrawLine3D(at(pp, pn), at(pan, n), edge);
+        DrawLine3D(at(pp, pf), at(pan, f), edge);
+      }
+      if (ok_here != prev || (ok_here && (i == 0 || i == steps))) {   // the band's ends
+        if (ok_here) {
+          DrawLine3D(at(pan, n), at(pan, f), edge);
+        } else {
+          const float pp = pan0 + (pan1 - pan0) * (i - 1) / steps;
+          DrawLine3D(at(pp, pn), at(pp, pf), edge);
+        }
+      }
+      prev = ok_here;
+      pn = n;
+      pf = f;
+    }
   }
-  rlPopMatrix();
+  rlDrawRenderBatchActive();
+  rlEnableDepthMask();
   // the place target: a ghost cube where the held one would go
   if (holding_ && selection_.has_target && selection_.stack_on < 0) {
     constexpr float EDGE = 0.03f;
@@ -1322,7 +1377,7 @@ std::string RobotView::click(State & state, Vector2 px)
       return buf;
     }
   } else if (hit_table) {
-    const std::string problem = reach_problem(tx, ty);
+    const std::string problem = reach_problem(state.reach, tx, ty);
     if (problem.empty()) {
       sel.has_target = true;
       sel.x = tx;
@@ -1439,8 +1494,9 @@ void RobotView::run_test_commands(State & state, TaskRunner & tasks)
       tasks.stop();
     } else if (cmd == "perf") {   // frame rate and time spent in this view, means over the last frames
       char buf[160];
-      snprintf(buf, sizeof(buf), "fps %d, frame %.2f ms, 3D view %.2f ms (CPU, %d frames)", GetFPS(),
-        PerfStats::mean(state.perf.frame_ms, state.perf.frames), PerfStats::mean(state.perf.view_ms, state.perf.views),
+      const double frame = PerfStats::mean(state.perf.frame_ms, state.perf.frames);
+      snprintf(buf, sizeof(buf), "%.0f fps, frame %.2f ms, 3D view %.2f ms (CPU, %d frames)",
+        frame > 0 ? 1000.0 / frame : 0.0, frame, PerfStats::mean(state.perf.view_ms, state.perf.views),
         std::min(state.perf.frames, PerfStats::N));
       result = buf;
     } else if (cmd == "shot") {   // a screenshot of this window, into the working directory
@@ -1509,6 +1565,7 @@ void RobotView::draw(State & state, TaskRunner & tasks, bool * open)
     in_tracked_ = state.tracked;
     in_placed_ = state.placed;
     in_pick_node_ = state.pick_node;
+    in_reach_ = state.reach;
     in_task_label_ = state.task.label;
     in_task_running_ = state.task.running;
     // a new held cube: the selection becomes the place target; nothing held: no target

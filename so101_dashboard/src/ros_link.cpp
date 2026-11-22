@@ -175,6 +175,26 @@ RosLink::RosLink(State & state)
   pick_state_sub_ = create_subscription<std_msgs::msg::String>(
     "/cube_pick_place/state", rclcpp::QoS(1).transient_local().reliable(),
     [this](const std_msgs::msg::String & msg) {on_pick_state(msg);});
+  // the pick node's reach table (latched, once at its start): rows of [pan_deg, near, far, near_all, far_all]
+  reach_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
+    "/cube_pick_place/reach", rclcpp::QoS(1).transient_local().reliable(),
+    [this](const std_msgs::msg::Float32MultiArray & msg) {
+      size_t cols = 5;
+      if (msg.layout.dim.size() >= 2 && msg.layout.dim[1].size > 0) {
+        cols = msg.layout.dim[1].size;
+      }
+      ReachTable table;
+      for (size_t i = 0; cols >= 5 && i + cols <= msg.data.size(); i += cols) {
+        const float * r = &msg.data[i];
+        table.rows.push_back(ReachRow{r[0], r[1], r[2], r[3], r[4]});
+      }
+      std::sort(table.rows.begin(), table.rows.end(),
+        [](const ReachRow & a, const ReachRow & b) {return a.pan_deg < b.pan_deg;});
+      table.received = now_s();
+      RCLCPP_INFO(get_logger(), "reach table: %zu pans", table.rows.size());
+      std::lock_guard<std::mutex> lock(state_.mutex);
+      state_.reach = table;
+    });
   // hidden test hook: GUI actions (clicks, buttons, screenshots) from a topic, for mock tests only
   const char * test = std::getenv("SO101_DASHBOARD_TEST");
   if (test && std::string(test) == "1") {
@@ -272,9 +292,13 @@ void RosLink::refresh_image_topics()
   // the pick node's state topic went away (node stopped, or an older one started): back to the
   // dashboard's own held-cube record, starting from the last state it published
   const bool pick_state_published = count_publishers("/cube_pick_place/state") > 0;
+  const bool reach_published = count_publishers("/cube_pick_place/reach") > 0;
   std::string wanted;
   {
     std::lock_guard<std::mutex> lock(state_.mutex);
+    if (!reach_published && state_.reach.received >= 0) {   // pick node gone: back to the fixed ring
+      state_.reach = ReachTable{};
+    }
     if (!pick_state_published && state_.pick_node.received >= 0) {
       state_.pick_node = PickNodeState{};
       state_.holding.source = "last pick node state";

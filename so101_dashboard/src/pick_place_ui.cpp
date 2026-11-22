@@ -1,5 +1,6 @@
 #include "pick_place_ui.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 #include <imgui.h>
@@ -65,6 +66,7 @@ CubeUi cube_ui(State & state, TaskRunner & tasks)
   ui.holding = state.holding;
   ui.held = cube_index(state.holding.cube);
   ui.sel = state.selection;
+  ui.reach = state.reach;
   if (ui.sel.cube >= 0) {
     const auto m = state.cubes.find(ui.sel.cube);
     const auto t = state.tracked.find(ui.sel.cube);
@@ -91,15 +93,53 @@ std::string held_name(const CubeUi & ui)
   return ui.held >= 0 ? "K" + std::to_string(ui.held) : "the cube";
 }
 
-std::string reach_problem(float x, float y)
+bool reach_band(const ReachTable & table, float pan_deg, bool every_yaw, float & near, float & far)
+{
+  if (table.rows.empty()) {
+    near = REACH_MIN_M;
+    far = REACH_MAX_M;
+    return true;
+  }
+  const auto & rows = table.rows;
+  if (pan_deg < rows.front().pan_deg - 1e-3f || pan_deg > rows.back().pan_deg + 1e-3f) {
+    return false;
+  }
+  size_t i = 0;
+  while (i + 2 < rows.size() && pan_deg > rows[i + 1].pan_deg) {
+    ++i;
+  }
+  const ReachRow & a = rows[i];
+  const ReachRow & b = rows.size() > 1 ? rows[i + 1] : rows[i];
+  const float span = b.pan_deg - a.pan_deg;
+  const float t = span > 1e-6f ? std::clamp((pan_deg - a.pan_deg) / span, 0.0f, 1.0f) : 0.0f;
+  const float an = every_yaw ? a.near_all : a.near, af = every_yaw ? a.far_all : a.far;
+  const float bn = every_yaw ? b.near_all : b.near, bf = every_yaw ? b.far_all : b.far;
+  // NaN on one side: no band there (it does not fade in between pans)
+  if (!std::isfinite(an) || !std::isfinite(af) || !std::isfinite(bn) || !std::isfinite(bf)) {
+    return false;
+  }
+  near = an + (bn - an) * t;
+  far = af + (bf - af) * t;
+  return far > near;
+}
+
+std::string reach_problem(const ReachTable & table, float x, float y)
 {
   const float r = std::hypot(x, y);
-  if (r >= REACH_MIN_M && r <= REACH_MAX_M) {
+  const float pan = std::atan2(y, x) * 180.0f / static_cast<float>(M_PI);
+  float near = 0.0f, far = 0.0f;
+  const bool band = reach_band(table, pan, false, near, far);
+  if (band && r >= near && r <= far) {
     return "";
   }
-  char buf[128];
-  snprintf(buf, sizeof(buf), "out of reach: %.1f cm from the base axis (placing works %.0f-%.0f cm)", r * 100.0f,
-    REACH_MIN_M * 100.0f, REACH_MAX_M * 100.0f);
+  char buf[160];
+  if (!band) {
+    snprintf(buf, sizeof(buf), "out of reach: nothing reaches at %.0f deg pan (the reach table covers %.0f..%.0f deg)",
+      pan, table.rows.front().pan_deg, table.rows.back().pan_deg);
+  } else {
+    snprintf(buf, sizeof(buf), "out of reach: %.1f cm from the base axis (%.0f-%.0f cm at this pan%s)", r * 100.0f,
+      near * 100.0f, far * 100.0f, table.rows.empty() ? ", fixed ring" : "");
+  }
   return buf;
 }
 
@@ -115,7 +155,7 @@ bool pick_selected(State & state, TaskRunner & tasks)
 bool place_at_target(State & state, TaskRunner & tasks)
 {
   const CubeUi ui = cube_ui(state, tasks);
-  if (!holding(ui) || !ui.sel.has_target || !reach_problem(ui.sel.x, ui.sel.y).empty() ||
+  if (!holding(ui) || !ui.sel.has_target || !reach_problem(ui.reach, ui.sel.x, ui.sel.y).empty() ||
     blocked(ui, ui.place_online, "/place_cube"))
   {
     return false;
@@ -154,8 +194,8 @@ void draw_cube_actions(State & state, TaskRunner & tasks, const CubeUi & ui, con
     ImGui::EndDisabled();
     ImGui::PopStyleColor(4);
     tooltip(why ? why : "find the cube with the wrist camera, grasp it from above (/pick_cube); STOP cancels");
-    if (ui.selected_seen && !reach_problem(ui.selected_x, ui.selected_y).empty()) {
-      ImGui::TextColored(theme::AMBER, "outside the reach ring: the pick may fail");
+    if (ui.selected_seen && !reach_problem(ui.reach, ui.selected_x, ui.selected_y).empty()) {
+      ImGui::TextColored(theme::AMBER, "outside the reach band: the pick may fail");
     }
     ImGui::PopID();
     return;

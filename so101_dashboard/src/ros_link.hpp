@@ -18,6 +18,7 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <vision_msgs/msg/detection3_d_array.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -118,7 +119,19 @@ struct TrackedCube
   float edge = 0.03f;     // m
   float score = 0.0f;     // >= 0.5: stable
   double received = -1.0;
-  double seen = -1.0;     // now_s() time of the last image the cube was seen in (header.stamp)
+  double seen = 0.0;      // now_s() time of the last image the cube was seen in (header.stamp; < 0 early on)
+};
+
+// The pick node's reach table (/cube_pick_place/reach, latched): per pan (base_link, deg), the
+// radii [m] at which some cube yaw / every cube yaw can be grasped; NaN = nothing at that pan.
+struct ReachRow
+{
+  float pan_deg = 0.0f, near = NAN, far = NAN, near_all = NAN, far_all = NAN;
+};
+struct ReachTable
+{
+  std::vector<ReachRow> rows;   // sorted by pan; empty: no table (older pick node), the fixed ring applies
+  double received = -1.0;
 };
 
 // The last successful PlaceCube result: where the held cube was put down (base_link).
@@ -225,6 +238,7 @@ struct State
   PickNodeState pick_node;
   Holding holding;
   PlacedResult placed;
+  ReachTable reach;
   CubeSelection selection;
   std::deque<std::string> test_commands;   // SO101_DASHBOARD_TEST=1: from /so101_dashboard/test
   std::string screenshot;                  // file name of a requested screenshot (test hook)
@@ -260,6 +274,7 @@ private:
   rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr cubes_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection3DArray>::SharedPtr tracked_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr pick_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr reach_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr test_sub_;
   rclcpp::TimerBase::SharedPtr topics_timer_;
   rclcpp::CallbackGroup::SharedPtr image_group_;   // decoding must not hold up the joint states

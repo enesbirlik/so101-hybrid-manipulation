@@ -115,6 +115,7 @@ private:
     float yaw = 0.0f;
     float alpha = 0.0f;
     double held_since = -1.0;     // while held: when it went into the jaws (the slide there takes 150 ms)
+    ViewCube last;                // as drawn last: a cube gone from every source fades out from here
   };
   // A cube put down by a place: shown there until the detector confirms (or contradicts) it.
   struct Placed
@@ -131,6 +132,7 @@ private:
   std::map<int, TrackedCube> in_tracked_;
   PlacedResult in_placed_;
   PickNodeState in_pick_node_;
+  ReachTable in_reach_;
   std::string in_task_label_;
   bool in_task_running_ = false;
   std::map<int, CubeTrack> tracks_;
