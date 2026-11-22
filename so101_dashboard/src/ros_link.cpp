@@ -251,9 +251,16 @@ void RosLink::refresh_image_topics()
       topics.push_back(name);
     }
   }
+  // the pick node's state topic went away (node stopped, or an older one started): back to the
+  // dashboard's own held-cube record, starting from the last state it published
+  const bool pick_state_published = count_publishers("/cube_pick_place/state") > 0;
   std::string wanted;
   {
     std::lock_guard<std::mutex> lock(state_.mutex);
+    if (!pick_state_published && state_.pick_node.received >= 0) {
+      state_.pick_node = PickNodeState{};
+      state_.holding.source = "last pick node state";
+    }
     state_.image_topics = topics;
     if (state_.image_topic.empty() && std::find(topics.begin(), topics.end(), preferred) != topics.end()) {
       state_.image_topic = preferred;

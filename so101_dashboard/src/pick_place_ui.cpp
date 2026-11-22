@@ -131,7 +131,7 @@ bool stack_on_target(State & state, TaskRunner & tasks)
   {
     return false;
   }
-  return tasks.start_place(0.0, 0.0, ui.sel.any_yaw ? NAN : ui.sel.yaw_deg, ui.sel.stack_on);
+  return tasks.start_place(0.0, 0.0, NAN, ui.sel.stack_on);   // the lower cube sets the yaw
 }
 
 void draw_cube_actions(State & state, TaskRunner & tasks, const CubeUi & ui, const char * id)
@@ -189,7 +189,12 @@ void draw_cube_actions(State & state, TaskRunner & tasks, const CubeUi & ui, con
     ImGui::PopID();
     return;
   }
-  // the cube's yaw on the table (the stack takes the lower cube's yaw unless "any" is off)
+  if (ui.sel.stack_on >= 0) {   // a stacked cube takes the lower cube's yaw (pick node)
+    ImGui::TextColored(theme::DIM, "yaw: that of K%d", ui.sel.stack_on);
+    ImGui::PopID();
+    return;
+  }
+  // the cube's yaw on the table
   CubeSelection sel = ui.sel;
   bool changed = ImGui::Checkbox("any yaw", &sel.any_yaw);
   tooltip("let the pick node choose the yaw with the smallest wrist roll change");
