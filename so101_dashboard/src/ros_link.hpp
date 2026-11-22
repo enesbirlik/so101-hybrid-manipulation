@@ -18,6 +18,7 @@
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <vision_msgs/msg/detection3_d_array.hpp>
+#include <std_msgs/msg/float32_multi_array.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -118,6 +119,29 @@ struct TrackedCube
   float edge = 0.03f;     // m
   float score = 0.0f;     // >= 0.5: stable
   double received = -1.0;
+  double seen = 0.0;      // now_s() time of the last image the cube was seen in (header.stamp; < 0 early on)
+};
+
+// The pick node's reach table (/cube_pick_place/reach, latched): per pan (base_link, deg), the
+// radii [m] at which some cube yaw / every cube yaw can be grasped; NaN = nothing at that pan.
+struct ReachRow
+{
+  float pan_deg = 0.0f, near = NAN, far = NAN, near_all = NAN, far_all = NAN;
+};
+struct ReachTable
+{
+  std::vector<ReachRow> rows;   // sorted by pan; empty: no table (older pick node), the fixed ring applies
+  double received = -1.0;
+};
+
+// The last successful PlaceCube result: where the held cube was put down (base_link).
+struct PlacedResult
+{
+  int cube = -1;            // -1: not known (e.g. "cube (held at start)")
+  std::array<float, 3> position{};
+  float yaw_deg = NAN;      // the goal's yaw, NaN: any
+  double at = -1.0;
+  uint64_t seq = 0;         // bumped on every new result
 };
 
 // The pick node's own state topic (/cube_pick_place/state, transient-local JSON), when it has one.
@@ -126,6 +150,10 @@ struct PickNodeState
   double received = -1.0;   // -1: never heard (older pick node): the dashboard keeps its own record
   bool busy = false;
   std::string held;         // "cube_<k>", empty when nothing is held
+  std::string action;       // the running goal: "pick", "place", "overview", ... or empty
+  std::string last_action;  // the last finished pick/place ("last" object), its cube and outcome
+  std::string last_cube;
+  bool last_success = false;
 };
 
 // What the dashboard believes is between the jaws: from the PickCube / PlaceCube results, or from
@@ -170,6 +198,25 @@ struct TaskLogEntry
   std::string details;   // tooltip: the phases a pick/place went through
 };
 
+// Frame timing for the test hook's `perf` command: means over the last PerfStats::N frames. GUI thread only.
+struct PerfStats
+{
+  static constexpr int N = 240;
+  double frame_ms[N] = {}, view_ms[N] = {};
+  int frames = 0, views = 0;
+  void add_frame(double ms) {frame_ms[frames++ % N] = ms;}
+  void add_view(double ms) {view_ms[views++ % N] = ms;}
+  static double mean(const double * v, int count)
+  {
+    const int n = count < N ? count : N;
+    double s = 0;
+    for (int i = 0; i < n; ++i) {
+      s += v[i];
+    }
+    return n > 0 ? s / n : 0.0;
+  }
+};
+
 struct State
 {
   std::mutex mutex;
@@ -190,9 +237,12 @@ struct State
   std::map<int, TrackedCube> tracked;  // by cube index, the last /cubes/tracked
   PickNodeState pick_node;
   Holding holding;
+  PlacedResult placed;
+  ReachTable reach;
   CubeSelection selection;
   std::deque<std::string> test_commands;   // SO101_DASHBOARD_TEST=1: from /so101_dashboard/test
   std::string screenshot;                  // file name of a requested screenshot (test hook)
+  PerfStats perf;                          // GUI thread only
 
   TaskStatus task;
   std::deque<TaskLogEntry> task_log;   // newest first
@@ -224,6 +274,7 @@ private:
   rclcpp::Subscription<visualization_msgs::msg::MarkerArray>::SharedPtr cubes_sub_;
   rclcpp::Subscription<vision_msgs::msg::Detection3DArray>::SharedPtr tracked_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr pick_state_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr reach_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr test_sub_;
   rclcpp::TimerBase::SharedPtr topics_timer_;
   rclcpp::CallbackGroup::SharedPtr image_group_;   // decoding must not hold up the joint states

@@ -175,6 +175,26 @@ RosLink::RosLink(State & state)
   pick_state_sub_ = create_subscription<std_msgs::msg::String>(
     "/cube_pick_place/state", rclcpp::QoS(1).transient_local().reliable(),
     [this](const std_msgs::msg::String & msg) {on_pick_state(msg);});
+  // the pick node's reach table (latched, once at its start): rows of [pan_deg, near, far, near_all, far_all]
+  reach_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
+    "/cube_pick_place/reach", rclcpp::QoS(1).transient_local().reliable(),
+    [this](const std_msgs::msg::Float32MultiArray & msg) {
+      size_t cols = 5;
+      if (msg.layout.dim.size() >= 2 && msg.layout.dim[1].size > 0) {
+        cols = msg.layout.dim[1].size;
+      }
+      ReachTable table;
+      for (size_t i = 0; cols >= 5 && i + cols <= msg.data.size(); i += cols) {
+        const float * r = &msg.data[i];
+        table.rows.push_back(ReachRow{r[0], r[1], r[2], r[3], r[4]});
+      }
+      std::sort(table.rows.begin(), table.rows.end(),
+        [](const ReachRow & a, const ReachRow & b) {return a.pan_deg < b.pan_deg;});
+      table.received = now_s();
+      RCLCPP_INFO(get_logger(), "reach table: %zu pans", table.rows.size());
+      std::lock_guard<std::mutex> lock(state_.mutex);
+      state_.reach = table;
+    });
   // hidden test hook: GUI actions (clicks, buttons, screenshots) from a topic, for mock tests only
   const char * test = std::getenv("SO101_DASHBOARD_TEST");
   if (test && std::string(test) == "1") {
@@ -195,6 +215,7 @@ void RosLink::on_tracked(const vision_msgs::msg::Detection3DArray & msg)
   // no message mentioned it for TRACKED_TIMEOUT_S; the detector sends all of them in every message
   constexpr double TRACKED_TIMEOUT_S = 2.0;
   const double now = now_s();
+  const rclcpp::Time ros_now = this->now();
   std::lock_guard<std::mutex> lock(state_.mutex);
   auto & cubes = state_.tracked;
   for (auto it = cubes.begin(); it != cubes.end(); ) {
@@ -213,6 +234,14 @@ void RosLink::on_tracked(const vision_msgs::msg::Detection3DArray & msg)
     c.edge = d.bbox.size.x > 0 ? static_cast<float>(d.bbox.size.x) : 0.03f;
     c.score = static_cast<float>(d.results[0].hypothesis.score);
     c.received = now;
+    // header.stamp = the last image the cube was seen in (perception README); a zero stamp or a
+    // clock that does not match (sim time, another machine) counts as "seen now"
+    const rclcpp::Time stamp(d.header.stamp, ros_now.get_clock_type());
+    double age = stamp.nanoseconds() > 0 ? (ros_now - stamp).seconds() : 0.0;
+    if (!std::isfinite(age) || age < -0.5 || age > 3600.0) {
+      age = 0.0;
+    }
+    c.seen = now - std::max(0.0, age);
     cubes[k] = c;
   }
 }
@@ -225,6 +254,15 @@ void RosLink::on_pick_state(const std_msgs::msg::String & msg)
   const std::string busy = json_value(text, "busy");
   const std::string status = json_value(text, "state").empty() ? json_value(text, "status") : json_value(text, "state");
   s.busy = busy == "true" || status == "busy";
+  // keys are sorted: the top-level "action" comes before "last" and its own "action"
+  const size_t last_at = text.find("\"last\"");
+  s.action = json_value(text.substr(0, last_at), "action");
+  const std::string last = json_value(text, "last");
+  if (!last.empty() && last.front() == '{') {
+    s.last_action = json_value(last, "action");
+    s.last_cube = json_value(last, "cube");
+    s.last_success = json_value(last, "success") == "true";
+  }
   for (const char * key : {"held", "holding", "held_cube"}) {
     bool is_string = false;
     std::string v = json_value(text, key, &is_string);
@@ -254,9 +292,13 @@ void RosLink::refresh_image_topics()
   // the pick node's state topic went away (node stopped, or an older one started): back to the
   // dashboard's own held-cube record, starting from the last state it published
   const bool pick_state_published = count_publishers("/cube_pick_place/state") > 0;
+  const bool reach_published = count_publishers("/cube_pick_place/reach") > 0;
   std::string wanted;
   {
     std::lock_guard<std::mutex> lock(state_.mutex);
+    if (!reach_published && state_.reach.received >= 0) {   // pick node gone: back to the fixed ring
+      state_.reach = ReachTable{};
+    }
     if (!pick_state_published && state_.pick_node.received >= 0) {
       state_.pick_node = PickNodeState{};
       state_.holding.source = "last pick node state";
