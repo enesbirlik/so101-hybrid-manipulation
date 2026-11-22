@@ -10,13 +10,14 @@ install(PROGRAMS scripts/wrist_camera_node.py scripts/cube_detector_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 # imported by cube_detector_node.py from its own directory
-install(FILES scripts/cube_detection.py
+install(FILES scripts/cube_detection.py scripts/cube_tracking.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)
   find_package(ament_cmake_pytest REQUIRED)
-  ament_add_pytest_test(test_cube_detection test/test_cube_detection.py)
+  ament_add_pytest_test(test_cube_detection test/test_cube_detection.py TIMEOUT 180)
+  ament_add_pytest_test(test_cube_tracking test/test_cube_tracking.py)
 endif()
 
 ament_package()
