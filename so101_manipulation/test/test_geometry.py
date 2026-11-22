@@ -108,9 +108,10 @@ def test_within_limits_refuses_roll_beyond_90():
 
 
 def test_out_of_reach_is_rejected_with_a_clear_message(planner):
-    plan, msg = planner.plan_cube([0.40, 0.0], 0.0, OPEN)
+    # 40 cm is reachable with leaning jaws since the tilt sweep (test_tilt.py); 50 cm is not
+    plan, msg = planner.plan_cube([0.50, 0.0], 0.0, OPEN)
     assert plan is None
-    assert "reach 40.0 cm" in msg
+    assert "reach 50.0 cm" in msg
 
 
 def test_vertical_reach_limit_and_tilt_fallback(model):
