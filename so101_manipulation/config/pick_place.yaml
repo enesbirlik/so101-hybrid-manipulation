@@ -30,6 +30,8 @@ cube_pick_place:
     open_deg: 30.0  # gripper opening for the approach (~53 mm gap)
     grasp_tip_height: 0.011  # fixed jaw tip above the cube's bottom at the grasp
     hover_height: 0.07  # fixed jaw tip above the cube's bottom at the hover
+    stack_snap_m: 0.012  # stacking: the lower cube's top snaps to a whole cube level when this close
+    stack_min_rise_m: 0.01  # stacking: the lowest hover above the release height (vertical reach ends ~9 cm up)
     hover_min_height: 0.05  # lowest hover tried when the hover is out of reach
     descend_step: 0.01  # height step of the descent
     gap_fraction: 0.5  # where the cube centre goes between the fixed (0) and moving (1) jaw tip; 0.5 = gap midpoint

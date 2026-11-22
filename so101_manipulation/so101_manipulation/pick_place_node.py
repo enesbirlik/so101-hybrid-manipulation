@@ -82,6 +82,8 @@ PARAMS = {
     "open_deg": (30.0, "gripper opening for the approach (~53 mm gap)"),
     "grasp_tip_height": (0.011, "fixed jaw tip above the cube's bottom at the grasp"),
     "hover_height": (0.07, "fixed jaw tip above the cube's bottom at the hover"),
+    "stack_snap_m": (0.012, "stacking: the lower cube's top snaps to a whole cube level when this close"),
+    "stack_min_rise_m": (0.01, "stacking: the lowest hover above the release height (vertical reach ends ~9 cm up)"),
     "hover_min_height": (0.05, "lowest hover tried when the hover is out of reach"),
     "descend_step": (0.01, "height step of the descent"),
     "gap_fraction": (0.5, "where the cube centre goes between the fixed (0) and moving (1) jaw tip; "
@@ -962,6 +964,12 @@ class PickPlaceNode(Node):
                     raise Fail("setup", f"{cube_key(on)} not seen in the last {p.stack_max_age_s:.0f} s")
                 target = lower.centre[:2].copy()
                 surface = float(lower.centre[2] + self.edge / 2 - self.model.table_z)
+                # A stacked cube can only rest at a whole level (table, or n cubes up). The detector puts
+                # an upper cube ~7 mm high (no table prior up there), which pushed a third level out of
+                # vertical reach (2026-11-22): snap to the nearest level when it is close.
+                level = round(surface / self.edge)
+                if level >= 1 and abs(surface - level * self.edge) <= p.stack_snap_m:
+                    surface = level * self.edge
                 yaws = self.planner.close_options(lower.yaw)
             elif not math.isnan(req.yaw_deg):
                 yaws = self.planner.close_options(math.radians(req.yaw_deg))
@@ -979,7 +987,7 @@ class PickPlaceNode(Node):
                         raise Fail("carry", f"no place pose at ({xy[0] * 100:.1f}, {xy[1] * 100:.1f}) cm for a cube "
                                             f"held at {math.degrees(held['lean']):+.0f} deg lean: {why}")
                     return pl
-                heights = list(np.arange(hover_h, release_h + 0.03, -0.005))
+                heights = list(np.arange(hover_h, release_h + (p.stack_min_rise_m if on else 0.03) - 1e-4, -0.005))
                 pl, reasons = self.planner.plan_vertical(xy, yaws_ if yaws_ is not None else [None], math.radians(grip),
                                                          heights, release_h, p.descend_step, 0.5,
                                                          prefer_roll=self.motion.q_arm()[4])
