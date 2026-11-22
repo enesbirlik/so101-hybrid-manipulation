@@ -133,3 +133,15 @@ def test_path_clearance_detects_a_dip(model):
     assert model.path_clearance(a, b, OPEN) < 0.012
     # a carried cube hanging 11 mm under the tip lowers the clearance by about that
     assert model.path_clearance(a, a, OPEN, load_below=0.011) < model.path_clearance(a, a, OPEN)
+
+
+def test_clamp_arm_keeps_a_biased_goal_inside_the_limits():
+    """2026-11-22: hover trim +0.2 deg on a wrist_flex planned at its 95 deg limit was refused."""
+    import math
+    from so101_manipulation.motion import clamp_arm
+    from so101_manipulation.kinematics import JOINT_LIMITS, within_limits
+    q = [0.1, -0.2, 0.3, JOINT_LIMITS["wrist_flex"][1] + math.radians(0.2), math.radians(95.0)]
+    c = clamp_arm(q, roll_limit=math.pi / 2)
+    assert within_limits(c) is None
+    assert abs(c[3] - JOINT_LIMITS["wrist_flex"][1]) < 1e-12 and abs(c[4] - math.pi / 2) < 1e-12
+    assert list(c[:3]) == q[:3]

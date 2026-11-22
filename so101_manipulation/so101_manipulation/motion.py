@@ -53,6 +53,19 @@ def duration(secs: float) -> Duration:
     return Duration(sec=int(secs), nanosec=int((secs % 1) * 1e9))
 
 
+def clamp_arm(q, roll_limit=math.pi / 2):
+    """A biased arm command kept inside the planning limits and the wrist_roll limit: a trim at a
+    joint limit corrects up to the limit instead of making the goal invalid (wrist_flex 95.2 deg
+    was refused at a far, tilted grasp, 2026-11-22)."""
+    out = np.array(q, float)
+    for k, name in enumerate(ARM):
+        lo, hi = JOINT_LIMITS[name]
+        if name == "wrist_roll":
+            lo, hi = max(lo, -roll_limit), min(hi, roll_limit)
+        out[k] = min(max(out[k], lo), hi)
+    return out
+
+
 class Motion:
     def __init__(self, node, callback_group, min_move_s=0.8, roll_limit=math.pi / 2, settle_s=0.3):
         self.node = node
@@ -237,7 +250,7 @@ class Motion:
             if np.max(np.abs(err)) < math.radians(tol_deg):
                 break
             bias = np.clip(bias + err, -lim, lim)
-            r = self.run("arm", [target + bias], times=[move_s])
+            r = self.run("arm", [clamp_arm(target + bias, self.roll_limit)], times=[move_s])
             if not r.ok:
                 break
         return bias
@@ -249,7 +262,7 @@ class Motion:
         only, from trim_arm) is added to every point."""
         self.check_cancel()
         if bias is not None and ctrl == "arm":
-            points = [np.asarray(p, float) + bias for p in points]
+            points = [clamp_arm(np.asarray(p, float) + bias, self.roll_limit) for p in points]
         if times is None:
             times = self.timed(ctrl, points, speed)
         t0 = time.monotonic()
