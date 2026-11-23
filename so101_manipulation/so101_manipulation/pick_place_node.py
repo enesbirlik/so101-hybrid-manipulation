@@ -127,7 +127,7 @@ PARAMS = {
     "descend_contact_lag_deg": (1.5, "contact zone: lag rise over the moving baseline = contact"),
     "free_descent_lag_deg": (4.5, "descent above the contact zone: lag over the hover baseline that stops it (safety net)"),
     "contact_warmup_s": (0.4, "contact zone: the first part of the move learns the moving lag baseline"),
-    "contact_zone_speed_factor": (0.5, "contact zone: descent speed x this (less tracking lag, more time to react)"),
+    "contact_zone_speed_factor": (1.0, "contact zone: descent speed x this (0.5 halved it; slow joints stick-slip, the hand shook more at 3-6 deg/s than at 12, 2026-11-23)"),
     "final_trim_tol_m": (0.003, "after the descent: trim again when the tip ended higher than its goal by more than this"),
     "contact_zone_m": (0.035, "the last part of the descent (tip within this of its goal) runs with the tight contact threshold"),
     "descend_lag_samples": (15, "controller states averaged after each step"),
@@ -853,8 +853,11 @@ class PickPlaceNode(Node):
         k = next((n for n, h in enumerate(hs) if h <= hs[-1] + p.contact_zone_m + 1e-6), 0)
         phases = ([(pts[:k], False)] if k > 0 else []) + [(pts[k:], True)]
         self.feedback("descend", f"down to {hs[-1] * 100:.1f} cm; contact watch tight below {hs[k] * 100:.1f} cm")
+        # ONE trajectory through both phases (two goals stopped the arm between them, and every new goal
+        # made the servos restart from rest: a visible jerk, 2026-11-23). The tight watch starts when
+        # the trajectory's clock reaches the contact zone; the speed changes there without a stop.
         prev_q = np.asarray(plan.hover.q)
-        res = None
+        all_pts, times, t_end, t_zone = [], [], 0.0, 0.0
         for seg, zone in phases:
             if not seg:
                 continue
@@ -863,12 +866,21 @@ class PickPlaceNode(Node):
             total = max(self.motion.min_move_s, span / max(1e-3, speed))
             if zone:
                 total = max(total, p.contact_warmup_s * 3)
-                state.update(zone=True, t0=time.monotonic(), dyn=[], base=None)
-            times = [total * (n + 1) / len(seg) for n in range(len(seg))]
-            res = self.motion.run("arm", seg, times=times, monitor=monitor, bias=self.arm_bias, through=True)
+                t_zone = t_end
+            times += [t_end + total * (n + 1) / len(seg) for n in range(len(seg))]
+            all_pts += list(seg)
+            t_end += total
             prev_q = np.asarray(seg[-1])
-            if res.stopped or not res.ok:
-                break
+        run_t0 = time.monotonic()
+
+        def monitor_timed(samples):
+            for s_ in samples:
+                if not state["zone"] and s_.t - run_t0 >= t_zone:
+                    state.update(zone=True, t0=s_.t, dyn=[], base=None)
+                if monitor([s_]):
+                    return True
+            return False
+        res = self.motion.run("arm", all_pts, times=times, monitor=monitor_timed, bias=self.arm_bias, through=True)
         h_now = float(self.model.tip(np.asarray(self.motion.q_arm()))[2] - self.model.table_z)
         i = int(np.argmin([abs(h - h_now) for h in plan.heights]))
         if res.stopped:
