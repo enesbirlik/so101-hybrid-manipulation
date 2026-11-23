@@ -18,6 +18,10 @@ arm_controller:
     command_interfaces: [position]
     state_interfaces: [position, velocity]
     allow_partial_joints_goal: false
+    # A new goal starts from the last COMMAND, not from the measured position. The servos hold a static
+    # error of ~0.5 deg (friction, sag); starting each goal from the measured pose made the reference
+    # jump and briefly run backwards (shoulder_lift reversed twice per descent: backlash knocks, 2026-11-23).
+    interpolate_from_desired_state: true
     constraints:
       stopped_velocity_tolerance: 0.05
       goal_time: 1.0
