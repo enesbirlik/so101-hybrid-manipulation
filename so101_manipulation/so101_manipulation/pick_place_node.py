@@ -321,10 +321,20 @@ class PickPlaceNode(Node):
 
     def update_memory(self):
         """Per-cube memory for the whole session: the newest observation of every cube the tracker
-        reports, unless the node knows better (picked: in the jaws; placed: where it was put)."""
+        reports, unless the node knows better (picked: in the jaws; placed: where it was put).
+        While a cube is held, observations near the jaw tip are the held cube itself (its marker can
+        read as another id), not a cube in the scene: they are dropped."""
+        tip = None
+        if self.holding is not None:
+            try:
+                tip = np.asarray(self.model.tip(self.motion.q_arm()), float)
+            except Exception:  # noqa: BLE001  (no joint state yet)
+                tip = None
         for k in self.tracker.known():
             est = self.tracker.get(k)
             if est is None:
+                continue
+            if tip is not None and np.linalg.norm(np.asarray(est.centre, float) - tip) < 0.04:
                 continue
             t_obs = time.monotonic() - est.age_s
             with self.memory_lock:
