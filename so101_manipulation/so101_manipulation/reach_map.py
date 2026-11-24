@@ -3,19 +3,25 @@
 
     python3 -m so101_manipulation.reach_map --out DIR [--yaml config/reach.yaml] [--procs 4]
         [--max-tilt 45] [--pans -60 -45 ... 60] [--r-min 0.06] [--r-max 0.44] [--r-step 0.01] [--yaws 0 45]
+    python3 -m so101_manipulation.reach_map --out DIR --yaml config/reach.yaml --place-from DIR/reach_v2_0_summary.json
 
 writes DIR/reach_v2_<max tilt>.json (one row per pan / radius / cube yaw: ok, lean, roll, why) and
 DIR/reach_v2_<max tilt>_summary.json (per pan: near and far limit, the lean needed there, what
-stops the far end), and with --yaml the table the node publishes on ~/reach.
+stops the far end), and with --yaml the table the node publishes on ~/reach. With --yaml and a lean
+above 0 it also runs the planner with vertical jaws only (--max-tilt 0): that band is where a held
+cube can be put down (a vertical hold goes down vertically; a tilted hold reaches less, see
+grasp.plan_place_held). --place-from merges such a vertical summary into an existing yaml without
+recomputing the pick band.
 
 Radii are measured from base_link's origin (the dashboard's ring centre), pans about it as well;
 the cube yaw is absolute (base_link). Runs niced, with at most --procs processes.
 
 ~/reach (std_msgs/Float32MultiArray, latched): one row per pan,
-    [pan_deg, near_m, far_m, near_all_m, far_all_m]
+    [pan_deg, near_m, far_m, near_all_m, far_all_m, place_near_m, place_far_m]
 near/far: the closest / farthest radius at which SOME tested cube yaw can be grasped (the band
-between them is continuous at the scan step); *_all: where EVERY tested yaw can be grasped.
-NaN when nothing at that pan is reachable.
+between them is continuous at the scan step); *_all: where EVERY tested yaw can be grasped;
+place_*: the some-yaw band with vertical jaws (where a held cube can be put down).
+NaN when nothing at that pan is reachable (and place_* in a table written before they existed).
 """
 
 from __future__ import annotations
@@ -29,7 +35,7 @@ from pathlib import Path
 
 import numpy as np
 
-COLUMNS = ["pan_deg", "near_m", "far_m", "near_all_m", "far_all_m"]
+COLUMNS = ["pan_deg", "near_m", "far_m", "near_all_m", "far_all_m", "place_near_m", "place_far_m"]
 
 _planner = None
 
@@ -127,13 +133,23 @@ def summarize(rows, pans=None):
     return out
 
 
-def write_yaml(path, summary, meta):
+def place_band(place, pan):
+    """(near, far) of the vertical-jaw summary row at this pan, (None, None) if there is none."""
+    for s in place or []:
+        if abs(float(s["pan_deg"]) - float(pan)) < 1e-6:
+            return s["near_m"], s["far_m"]
+    return None, None
+
+
+def write_yaml(path, summary, meta, place=None):
+    """The table the node publishes; `place`: the summary of a vertical-jaw run (--max-tilt 0) for the place band."""
     import yaml
 
     def f(v):
         return float("nan") if v is None else float(v)
     data = {"reach": {"columns": COLUMNS,
-                      "rows": [[f(s["pan_deg"]), f(s["near_m"]), f(s["far_m"]), f(s["near_all_m"]), f(s["far_all_m"])]
+                      "rows": [[f(s["pan_deg"]), f(s["near_m"]), f(s["far_m"]), f(s["near_all_m"]), f(s["far_all_m"]),
+                                *(f(v) for v in place_band(place, s["pan_deg"]))]
                                for s in summary],
                       **meta}}
     with open(path, "w") as fh:
@@ -143,9 +159,25 @@ def write_yaml(path, summary, meta):
 
 
 def load_reach(path):
+    """The reach table; rows written before the place columns existed are padded with NaN."""
     import yaml
     with open(path) as fh:
-        return yaml.safe_load(fh)["reach"]
+        r = yaml.safe_load(fh)["reach"]
+    r["rows"] = [list(row) + [float("nan")] * (len(COLUMNS) - len(row)) for row in r["rows"]]
+    r["columns"] = COLUMNS
+    return r
+
+
+def merge_place(path, place):
+    """Write the place band of a vertical-jaw summary into an existing yaml (pick band unchanged)."""
+    r = load_reach(path)
+    summary = [dict(zip(COLUMNS, row)) for row in r["rows"]]
+    for s in summary:
+        for k in COLUMNS[1:5]:
+            s[k] = None if s[k] != s[k] else s[k]
+    meta = {k: v for k, v in r.items() if k not in ("columns", "rows")}
+    meta["place_computed"] = time.strftime("%Y-%m-%d")
+    write_yaml(path, summary, meta, place)
 
 
 def publish_reach(node, p):
@@ -183,6 +215,13 @@ def publish_reach(node, p):
         node.get_logger().info(f"reach (some cube yaw): {min(x[1] for x in ok) * 100:.0f}-"
                                f"{max(x[2] for x in ok) * 100:.0f} cm over pans {rows[0][0]:+.0f}..{rows[-1][0]:+.0f} deg "
                                "(~/reach)")
+    place = [row for row in rows if row[5] == row[5]]
+    if place:
+        node.get_logger().info(f"place band (vertical jaws): {min(x[5] for x in place) * 100:.0f}-"
+                               f"{max(x[6] for x in place) * 100:.0f} cm")
+    else:
+        node.get_logger().warn("reach table has no place band: the dashboard offers the pick band for places "
+                               "(rerun reach_map with --yaml, or --place-from)")
     return pub
 
 
@@ -200,7 +239,15 @@ def main():
     ap.add_argument("--r-min", type=float, default=0.06)
     ap.add_argument("--r-max", type=float, default=0.44)
     ap.add_argument("--r-step", type=float, default=0.01)
+    ap.add_argument("--place-from", default="", help="vertical-jaw summary json to merge into --yaml (no planning)")
     a = ap.parse_args()
+    if a.place_from:
+        if not a.yaml:
+            ap.error("--place-from needs --yaml")
+        with open(a.place_from) as fh:
+            merge_place(a.yaml, json.load(fh))
+        print(f"place band from {a.place_from} merged into {a.yaml}")
+        return
     try:
         os.nice(10)
     except OSError:
@@ -217,8 +264,16 @@ def main():
     summary = summarize(rows, a.pans)
     with open(os.path.join(a.out, f"reach_v2_{tag}_summary.json"), "w") as fh:
         json.dump(summary, fh, indent=1)
+    place = summary
+    if a.yaml and a.max_tilt > 0:
+        vjobs = [(0.0, r, th, y, a.tilt_step, a.max_close_elev) for th in a.pans for r in radii for y in a.yaws]
+        with Pool(max(1, min(4, a.procs))) as pool:
+            vrows = pool.map(_work, vjobs, chunksize=2)
+        place = summarize(vrows, a.pans)
+        with open(os.path.join(a.out, "reach_v2_0_summary.json"), "w") as fh:
+            json.dump(place, fh, indent=1)
     if a.yaml:
-        write_yaml(a.yaml, summary, {"max_tilt_deg": a.max_tilt, "tilt_step_deg": a.tilt_step,
+        write_yaml(a.yaml, summary, place=place, meta={"max_tilt_deg": a.max_tilt, "tilt_step_deg": a.tilt_step,
                                      "max_close_elev_deg": a.max_close_elev, "roll_limit_deg": 90.0,
                                      "cube_yaws_deg": list(a.yaws), "r_step_m": a.r_step,
                                      "computed": time.strftime("%Y-%m-%d")})

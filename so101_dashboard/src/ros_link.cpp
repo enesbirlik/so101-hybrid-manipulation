@@ -175,7 +175,8 @@ RosLink::RosLink(State & state)
   pick_state_sub_ = create_subscription<std_msgs::msg::String>(
     "/cube_pick_place/state", rclcpp::QoS(1).transient_local().reliable(),
     [this](const std_msgs::msg::String & msg) {on_pick_state(msg);});
-  // the pick node's reach table (latched, once at its start): rows of [pan_deg, near, far, near_all, far_all]
+  // the pick node's reach table (latched, once at its start): rows of
+  // [pan_deg, near, far, near_all, far_all(, place_near, place_far)]
   reach_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
     "/cube_pick_place/reach", rclcpp::QoS(1).transient_local().reliable(),
     [this](const std_msgs::msg::Float32MultiArray & msg) {
@@ -186,7 +187,7 @@ RosLink::RosLink(State & state)
       ReachTable table;
       for (size_t i = 0; cols >= 5 && i + cols <= msg.data.size(); i += cols) {
         const float * r = &msg.data[i];
-        table.rows.push_back(ReachRow{r[0], r[1], r[2], r[3], r[4]});
+        table.rows.push_back(ReachRow{r[0], r[1], r[2], r[3], r[4], cols >= 7 ? r[5] : NAN, cols >= 7 ? r[6] : NAN});
       }
       std::sort(table.rows.begin(), table.rows.end(),
         [](const ReachRow & a, const ReachRow & b) {return a.pan_deg < b.pan_deg;});

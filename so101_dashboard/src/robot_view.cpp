@@ -1242,9 +1242,9 @@ void RobotView::draw_table_labels(ImVec2 origin) const
 
 void RobotView::draw_pick_place_3d() const
 {
-  // the reach band: where the pick node can grasp / put down a cube, per pan from its reach table
-  // (the "every yaw" band clear, the "some yaw" band fainter), or the fixed ring without one;
-  // brighter while a cube is held
+  // the reach band, per pan from the pick node's reach table, or the fixed ring without one:
+  // nothing held, where a cube can be picked (the "every yaw" band clear, the "some yaw" band
+  // fainter); a cube held, brighter and only where it can be put down (the place band)
   const float a = holding_ ? 0.55f : 0.24f;
   const ImVec4 & ok = theme::OK;
   const float z = table_top_ + 0.001f;
@@ -1258,8 +1258,10 @@ void RobotView::draw_pick_place_3d() const
     };
   rlDrawRenderBatchActive();
   rlDisableDepthMask();
-  for (int pass = 0; pass < (table ? 2 : 1); ++pass) {
-    const bool every = pass == 1 || !table;
+  const bool place = holding_ && has_place_band(in_reach_);
+  for (int pass = 0; pass < (table && !place ? 2 : 1); ++pass) {
+    const bool every = pass == 1 || !table || place;
+    const Reach kind = place ? Reach::Place : pass == 1 ? Reach::EveryYaw : Reach::SomeYaw;
     const float k = every ? 1.0f : 0.45f;   // the some-yaw band fainter
     const Color fill = theme::to_raylib(ImVec4(ok.x, ok.y, ok.z, a * (every ? 0.28f : 0.14f)));
     const Color edge = theme::to_raylib(ImVec4(ok.x, ok.y, ok.z, a * k));
@@ -1268,7 +1270,7 @@ void RobotView::draw_pick_place_3d() const
     for (int i = 0; i <= steps; ++i) {
       const float pan = pan0 + (pan1 - pan0) * i / steps;
       float n = 0, f = 0;
-      const bool ok_here = reach_band(in_reach_, pan, every, n, f);
+      const bool ok_here = reach_band(in_reach_, pan, kind, n, f);
       if (ok_here && prev) {
         const float pp = pan0 + (pan1 - pan0) * (i - 1) / steps;
         rlBegin(RL_TRIANGLES);
@@ -1379,7 +1381,7 @@ std::string RobotView::click(State & state, Vector2 px)
       return buf;
     }
   } else if (hit_table) {
-    const std::string problem = reach_problem(state.reach, tx, ty);
+    const std::string problem = reach_problem(state.reach, tx, ty, true);
     if (problem.empty()) {
       sel.has_target = true;
       sel.x = tx;

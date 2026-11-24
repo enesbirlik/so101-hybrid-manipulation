@@ -123,10 +123,11 @@ struct TrackedCube
 };
 
 // The pick node's reach table (/cube_pick_place/reach, latched): per pan (base_link, deg), the
-// radii [m] at which some cube yaw / every cube yaw can be grasped; NaN = nothing at that pan.
+// radii [m] at which some cube yaw / every cube yaw can be grasped, and the place band (vertical
+// jaws: where a held cube can be put down); NaN = nothing at that pan (place: not in the table).
 struct ReachRow
 {
-  float pan_deg = 0.0f, near = NAN, far = NAN, near_all = NAN, far_all = NAN;
+  float pan_deg = 0.0f, near = NAN, far = NAN, near_all = NAN, far_all = NAN, place_near = NAN, place_far = NAN;
 };
 struct ReachTable
 {
