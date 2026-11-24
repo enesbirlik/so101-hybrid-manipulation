@@ -247,7 +247,7 @@ def main():
         c = cubes["cube_2"]
         assert math.hypot(c["x_cm"] - 27.0, c["y_cm"] + 10.0) < 0.5 and c["stable"], c
         q = [math.degrees(d.js[n]) for n in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")]
-        assert abs(q[4] - (-72.4)) < 1.0, q
+        assert abs(q[4] - (-85.0)) < 1.0 and abs(q[0]) < 1.0, q
         s = d.settle_state()
         assert s["state"] == "idle" and s["holding"] is None, s
         # the cube is fresh and stable from the overview: the pick does not search

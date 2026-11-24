@@ -75,7 +75,7 @@ PARAMS = {
     "search_aim_heights": ([0.22, 0.26, 0.18], "camera heights [m] tried for the first view, aimed at where the cube "
                                               "was last seen (the first that sees it wins)"),
     # overview
-    "overview_poses_deg": ([22.8, -77.0, 40.9, 89.4, -72.4], "overview pose(s), 5 joints each (pan, lift, elbow, "
+    "overview_poses_deg": ([0.0, -74.3, 41.4, 90.0, -85.0], "overview pose(s), 5 joints each (pan, lift, elbow, "
                                                              "wrist_flex, roll) [deg], flat list; grasp.overview_pose()"),
     "overview_wait_s": (3.0, "overview: wait at most this long per pose for fresh frames and stable tracks"),
     "overview_min_frames": (8, "overview: processed frames to see after the arm stopped"),

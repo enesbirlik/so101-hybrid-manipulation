@@ -874,7 +874,7 @@ def view_coverage(model: ArmModel, T_gc, cam: FisheyeCamera, q_arm, grip, area=W
 
 def overview_pose(model: ArmModel, T_gc, cam: FisheyeCamera, grip=math.radians(12.0), d=0.22, H=0.28,
                   area=WORK_AREA, roll_limit_deg=85.0, wflex_margin_deg=5.0, min_camera_h=0.24,
-                  min_clearance=0.06, iters=600, seed=0):
+                  min_clearance=0.06, iters=600, seed=0, pan_deg=None):
     """Arm pose [rad] from which ONE wrist camera image covers as much of `area` as it can.
 
     Start: the camera ~H above the table looking straight down at reach d (least squares like
@@ -882,13 +882,16 @@ def overview_pose(model: ArmModel, T_gc, cam: FisheyeCamera, grip=math.radians(1
     needs a large wrist_roll). Then a seeded random local search on the coverage itself (the jaws
     hide part of the image, which the start does not know about). Kept: |roll| <= roll_limit_deg,
     wrist_flex wflex_margin_deg inside its limits, camera >= min_camera_h above the table, the
-    arm's lowest point >= min_clearance above it. Deterministic for a given seed.
+    arm's lowest point >= min_clearance above it. Deterministic for a given seed. `pan_deg`: hold the
+    pan there (0: the arm faces straight ahead, as people expect of a "look at the table" pose).
     Returns (q, coverage). Takes ~1 min: run it offline, the node uses `overview_poses_deg`."""
     lo = np.array([JOINT_LIMITS[n][0] for n in ARM])
     hi = np.array([JOINT_LIMITS[n][1] for n in ARM])
     lo[4], hi[4] = -math.radians(roll_limit_deg), math.radians(roll_limit_deg)
     lo[3] += math.radians(wflex_margin_deg)
     hi[3] -= math.radians(wflex_margin_deg)
+    if pan_deg is not None:
+        lo[0], hi[0] = math.radians(pan_deg) - 3e-3, math.radians(pan_deg) + 3e-3
 
     def res(x):
         T = camera_pose(model, T_gc, x)

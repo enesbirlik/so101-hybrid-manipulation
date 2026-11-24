@@ -124,17 +124,18 @@ The jaws go to `search_gripper_deg` (never below the floor) while searching.
 
 ### Overview pose
 
-`overview_poses_deg` = **[22.8, −77.0, 40.9, 89.4, −72.4]°** (pan, lift, elbow, wrist_flex, roll), from `grasp.overview_pose()`: start with the camera ~28 cm above the table looking straight down at 22 cm out (least squares like `view_pose`, pan and roll free: the camera sits beside the jaws, so looking straight down takes a large wrist_roll), then a seeded random local search on the coverage itself, keeping |roll| ≤ 85°, wrist_flex 5° inside its limit, the camera ≥ 24 cm up, the arm ≥ 6 cm above the table. Coverage (`grasp.view_coverage`) = the share of cube positions on a 1 cm grid whose top face is in the 1280×720 fisheye image (equidistant model of `wrist_camera_fisheye.yaml`, 10 px margin, < 85° off axis), not behind the jaws (projected hulls of `gripper_link` and the moving jaw at `search_gripper_deg`), the 22 mm top marker ≥ 30 px (15 px at the detector's 640 px; the smallest is 42 px) and seen at a view cosine ≥ 0.3.
+`overview_poses_deg` = **[0.0, −74.3, 41.4, 90.0, −85.0]°** (pan, lift, elbow, wrist_flex, roll), from `grasp.overview_pose(..., pan_deg=0)`. The arm faces straight ahead: the free-pan optimum (pan 22.8°, roll −72.4°, used until 2026-11-24) looked like the arm was looking off to one side, and with the pan held at 0 the coverage is better on every area wider than the work area (table). The search: start with the camera ~28 cm above the table looking straight down at 22 cm out (least squares like `view_pose`, pan and roll free: the camera sits beside the jaws, so looking straight down takes a large wrist_roll), then a seeded random local search on the coverage itself, keeping |roll| ≤ 85°, wrist_flex 5° inside its limit, the camera ≥ 24 cm up, the arm ≥ 6 cm above the table. Coverage (`grasp.view_coverage`) = the share of cube positions on a 1 cm grid whose top face is in the 1280×720 fisheye image (equidistant model of `wrist_camera_fisheye.yaml`, 10 px margin, < 85° off axis), not behind the jaws (projected hulls of `gripper_link` and the moving jaw at `search_gripper_deg`), the 22 mm top marker ≥ 30 px (15 px at the detector's 640 px; the smallest is 42 px) and seen at a view cosine ≥ 0.3.
 
 | | camera above the table | 15–30 cm × ±15 cm | 15–30 × ±20 cm | 12–34 × ±22 cm |
 |---|---|---|---|---|
-| overview | 24.8 cm, axis 15° off vertical | **99 %** (misses 5 points at 15–16 cm, y −1…+3 cm: behind the jaws) | 88 % | 72 % |
+| overview (pan 0) | 24.3 cm, axis 7.6° off vertical | **97 %** (misses points at 15–16 cm, y −8…+2 cm: behind the jaws) | 98 % | 82 % |
+| free pan (until 2026-11-24) | 24.8 cm, axis 15° off vertical | 99 % | 88 % | 72 % |
 | autograb's *near* view (pan 0) | 19.9 cm | 48 % | | |
 
 One pose is enough, so there is one. Recompute after a new hand-eye or kinematic calibration (~40 s):
 
 ```bash
-python3 -c "import math, numpy as np; from so101_manipulation import grasp as g; from so101_manipulation.kinematics import ArmModel, perception_config_dir as d; m = ArmModel(); q, f = g.overview_pose(m, g.load_hand_eye(d() / 'wrist_camera_hand_eye.yaml'), g.load_fisheye(d() / 'wrist_camera_fisheye.yaml')); print(np.degrees(q).round(1).tolist(), f)"
+python3 -c "import math, numpy as np; from so101_manipulation import grasp as g; from so101_manipulation.kinematics import ArmModel, perception_config_dir as d; m = ArmModel(); q, f = g.overview_pose(m, g.load_hand_eye(d() / 'wrist_camera_hand_eye.yaml'), g.load_fisheye(d() / 'wrist_camera_fisheye.yaml'), pan_deg=0); print(np.degrees(q).round(1).tolist(), f)"
 ```
 
 The node logs the coverage of the configured pose(s) at startup.
@@ -244,7 +245,7 @@ python3 test/smoke_mock.py                                    # miss, pick_place
 - **Close-up refinement (2026-11-22 fix) has run on mock and offline replays only.** Check on the arm with `pick k --hover-only` after an overview: the refine line should read `close-up 1: ... from 4 frames (spread x mm), shift y mm` with y the real far/near difference (it was silently ~0 before); "keeping the far one" should now carry its reason. If it says "no frame processed", the detector's motion gate (0.1 rad/s on any joint, incl. the gripper) is tripping at the hover (servo hunting); if "in none of N frames", save a wrist frame at the hover together with `/joint_states` to compare the cube's place in the image with the fisheye model (the 2026-11-22 views suggest it sits lower than the model says).
 - **Clutter (2026-11-22) has run on mock and offline only.** The jaw footprint is the convex hull of the mesh points per link below a neighbour's top; the real jaws and the cubes' positions (2-3 mm) decide whether 5 mm of margin is enough. Check: two cubes 4.5-5 cm apart, `pick --hover-only` (log `clutter: ... closing along ...`), look at the jaws over the neighbour from the side, then a real pick; and a place 3 cm next to a cube is refused. Run an overview first so the node knows every cube.
 - Stacking (`place --on`) has not run on mock with two cubes or on the real arm.
-- Overview pose, aimed views, early view exit, two-speed close, short hover trim and continuous lift/retreat (2026-11-22) have run on mock only. The coverage is a model: the jaw silhouette is the convex hull of the meshes, the marker size and view-angle limits are estimates, and the detector's real range at the image border is untested. The overview needs wrist_roll −72° and wrist_flex 89°.
+- Overview pose, aimed views, early view exit, two-speed close, short hover trim and continuous lift/retreat (2026-11-22) have run on mock only. The coverage is a model: the jaw silhouette is the convex hull of the meshes, the marker size and view-angle limits are estimates, and the detector's real range at the image border is untested. The overview needs wrist_roll −85° (roll limit 90°) and wrist_flex 90°.
 - `search_empty_frames` 6 (~0.4 s at 15 fps) may leave a view where a small, far cube is only found in some frames; raise it if searches miss cubes that are in view.
 - Hover trim with one 0.4 s move and 0.25 s settles: the measurement after 0.25 s may still be settling (stick-slip at P 16); `trim_max_iter` 2 allows one more pass.
 
@@ -283,7 +284,7 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `overview_poses_deg` | `[22.8, -77.0, 40.9, 89.4, -72.4]` | overview pose(s), 5 joints each (pan, lift, elbow, wrist_flex, roll) [deg], flat list; grasp.overview_pose() |
+| `overview_poses_deg` | `[0.0, -74.3, 41.4, 90.0, -85.0]` | overview pose(s), 5 joints each (pan, lift, elbow, wrist_flex, roll) [deg], flat list; grasp.overview_pose() |
 | `overview_wait_s` | `3.0` | overview: wait at most this long per pose for fresh frames and stable tracks |
 | `overview_min_frames` | `8` | overview: processed frames to see after the arm stopped |
 
