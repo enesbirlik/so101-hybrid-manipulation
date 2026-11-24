@@ -1324,6 +1324,7 @@ std::string RobotView::click(State & state, Vector2 px)
   // the nearest cube box (enlarged a little: they are small on screen), in the cube's own frame
   int hit_cube = -1;
   float hit_distance = 1e9f;
+  float hit_x = 0.0f, hit_y = 0.0f;   // the hit cube's centre (base_link)
   for (const auto & vc : cubes_) {
     if (vc.state == CubeState::Held) {   // in the jaws: not a target, and must not block the table
       continue;
@@ -1338,6 +1339,8 @@ std::string RobotView::click(State & state, Vector2 px)
     if (hit.hit && hit.distance < hit_distance) {
       hit_distance = hit.distance;
       hit_cube = vc.index;
+      hit_x = c.position[0];
+      hit_y = c.position[1];
     }
   }
   // the table plane
@@ -1375,8 +1378,16 @@ std::string RobotView::click(State & state, Vector2 px)
     if (hit_cube == held) {
       sel.message = "K" + std::to_string(held) + " is the held cube";
     } else {
-      sel.stack_on = hit_cube;
+      // the held cube goes down on top of it: the same place band as a place on the table
+      // (2026-11-24: a stack on a cube at 38 cm was offered and the pick node refused it)
+      const std::string problem = reach_problem(state.reach, hit_x, hit_y, true);
       sel.has_target = false;
+      if (!problem.empty()) {
+        sel.stack_on = -1;
+        sel.message = "cannot stack on K" + std::to_string(hit_cube) + ": " + problem;
+        return sel.message;
+      }
+      sel.stack_on = hit_cube;
       snprintf(buf, sizeof(buf), "stack target K%d", hit_cube);
       return buf;
     }
