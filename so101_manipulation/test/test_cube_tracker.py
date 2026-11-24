@@ -34,13 +34,35 @@ def test_tracked_repeated_stamp_is_not_fresh():
     assert not st.estimate("cube_2", now=1.2, since=0.5).stable
 
 
-def test_tracked_unstable_filter_but_fresh_observations_agree():
-    """The filter still holds old far-view observations (score < 0.5), the fresh close-up ones agree."""
+def test_tracked_lagging_filter_outputs_are_not_confirmation():
+    """Right after a move the filter's output still sits at the far view, stamp after stamp. Those
+    outputs agree with each other, but they are not fresh close-up observations: no stable estimate
+    from them (the node's fallback reads the per-frame detections instead)."""
     st = TrackedState()
-    for i in range(6):
+    for i in range(6):          # filter not stable (score 0.3): far and near observations mixed
         st.add(1.0 + i * 0.1, 1.0 + i * 0.1, [0.2003, -0.12, 0.0126], -0.5, 0.3, 2.8, 1.0)
-    e = st.estimate("cube_2", now=1.7, since=0.95, min_count=5)
-    assert e.stable and abs(e.centre[0] - 0.2003) < 1e-4
+    e = st.estimate("cube_2", now=1.7, since=0.95)
+    assert not e.stable
+
+
+def test_fresh_uses_only_observations_after_since():
+    """DetectionsCubeTracker.fresh: per-frame observations after `since` only, None if there are none."""
+    from so101_manipulation.cube_tracker import DetectionsCubeTracker
+    tr = object.__new__(DetectionsCubeTracker)
+    tr.windows = {"cube_2": CubeWindow()}
+    w = tr.windows["cube_2"]
+    for i in range(20):                       # far view
+        w.add(i * 0.1, [0.220, 0.03, 0.0126], 0.0)
+    now = [5.0]
+    tr.now = lambda: now[0]
+    assert tr.fresh("cube_2", since=4.0) is None
+    for i in range(3):                        # close-up, 7 mm off
+        w.add(4.1 + i * 0.1, [0.227, 0.03, 0.0126], 0.0)
+    e = tr.fresh("cube_2", since=4.0, min_count=4)
+    assert e is not None and not e.stable and e.count == 3
+    w.add(4.4, [0.2272, 0.03, 0.0126], 0.0)
+    e = tr.fresh("cube_2", since=4.0, min_count=4)
+    assert e.stable and abs(e.centre[0] - 0.227) < 0.0003
 
 
 def test_tracked_spread_from_covariance_kept():

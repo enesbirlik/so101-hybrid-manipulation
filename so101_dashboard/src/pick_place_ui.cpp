@@ -93,8 +93,21 @@ std::string held_name(const CubeUi & ui)
   return ui.held >= 0 ? "K" + std::to_string(ui.held) : "the cube";
 }
 
-bool reach_band(const ReachTable & table, float pan_deg, bool every_yaw, float & near, float & far)
+bool has_place_band(const ReachTable & table)
 {
+  for (const ReachRow & r : table.rows) {
+    if (std::isfinite(r.place_near) && std::isfinite(r.place_far)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool reach_band(const ReachTable & table, float pan_deg, Reach kind, float & near, float & far)
+{
+  if (kind == Reach::Place && !has_place_band(table)) {
+    kind = Reach::SomeYaw;   // older table: the pick band, as before
+  }
   if (table.rows.empty()) {
     near = REACH_MIN_M;
     far = REACH_MAX_M;
@@ -112,8 +125,13 @@ bool reach_band(const ReachTable & table, float pan_deg, bool every_yaw, float &
   const ReachRow & b = rows.size() > 1 ? rows[i + 1] : rows[i];
   const float span = b.pan_deg - a.pan_deg;
   const float t = span > 1e-6f ? std::clamp((pan_deg - a.pan_deg) / span, 0.0f, 1.0f) : 0.0f;
-  const float an = every_yaw ? a.near_all : a.near, af = every_yaw ? a.far_all : a.far;
-  const float bn = every_yaw ? b.near_all : b.near, bf = every_yaw ? b.far_all : b.far;
+  const auto pick = [kind](const ReachRow & r, float & n, float & f) {
+      n = kind == Reach::EveryYaw ? r.near_all : kind == Reach::Place ? r.place_near : r.near;
+      f = kind == Reach::EveryYaw ? r.far_all : kind == Reach::Place ? r.place_far : r.far;
+    };
+  float an, af, bn, bf;
+  pick(a, an, af);
+  pick(b, bn, bf);
   // NaN on one side: no band there (it does not fade in between pans)
   if (!std::isfinite(an) || !std::isfinite(af) || !std::isfinite(bn) || !std::isfinite(bf)) {
     return false;
@@ -123,12 +141,13 @@ bool reach_band(const ReachTable & table, float pan_deg, bool every_yaw, float &
   return far > near;
 }
 
-std::string reach_problem(const ReachTable & table, float x, float y)
+std::string reach_problem(const ReachTable & table, float x, float y, bool place)
 {
   const float r = std::hypot(x, y);
   const float pan = std::atan2(y, x) * 180.0f / static_cast<float>(M_PI);
   float near = 0.0f, far = 0.0f;
-  const bool band = reach_band(table, pan, false, near, far);
+  const bool place_band = place && has_place_band(table);
+  const bool band = reach_band(table, pan, place ? Reach::Place : Reach::SomeYaw, near, far);
   if (band && r >= near && r <= far) {
     return "";
   }
@@ -137,8 +156,9 @@ std::string reach_problem(const ReachTable & table, float x, float y)
     snprintf(buf, sizeof(buf), "out of reach: nothing reaches at %.0f deg pan (the reach table covers %.0f..%.0f deg)",
       pan, table.rows.front().pan_deg, table.rows.back().pan_deg);
   } else {
-    snprintf(buf, sizeof(buf), "out of reach: %.1f cm from the base axis (%.0f-%.0f cm at this pan%s)", r * 100.0f,
-      near * 100.0f, far * 100.0f, table.rows.empty() ? ", fixed ring" : "");
+    snprintf(buf, sizeof(buf), "out of reach: %.1f cm from the base axis (%s %.0f-%.0f cm at this pan%s)", r * 100.0f,
+      place_band ? "a held cube goes down at" : "picks reach", near * 100.0f, far * 100.0f,
+      table.rows.empty() ? ", fixed ring" : "");
   }
   return buf;
 }
@@ -155,7 +175,7 @@ bool pick_selected(State & state, TaskRunner & tasks)
 bool place_at_target(State & state, TaskRunner & tasks)
 {
   const CubeUi ui = cube_ui(state, tasks);
-  if (!holding(ui) || !ui.sel.has_target || !reach_problem(ui.reach, ui.sel.x, ui.sel.y).empty() ||
+  if (!holding(ui) || !ui.sel.has_target || !reach_problem(ui.reach, ui.sel.x, ui.sel.y, true).empty() ||
     blocked(ui, ui.place_online, "/place_cube"))
   {
     return false;

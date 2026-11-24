@@ -23,7 +23,7 @@ cube_pick_place:
     search_empty_frames: 6  # leave a view early once this many processed frames (/cubes/detections) after the settle did not show the cube; 0 = always wait search_view_wait_s
     search_aim_heights: [0.22, 0.26, 0.18]  # camera heights [m] tried for the first view, aimed at where the cube was last seen (the first that sees it wins)
     # overview
-    overview_poses_deg: [22.8, -77.0, 40.9, 89.4, -72.4]  # overview pose(s), 5 joints each (pan, lift, elbow, wrist_flex, roll) [deg], flat list; grasp.overview_pose()
+    overview_poses_deg: [0.0, -74.3, 41.4, 90.0, -85.0]  # overview pose(s), 5 joints each (pan, lift, elbow, wrist_flex, roll) [deg], flat list; grasp.overview_pose()
     overview_wait_s: 3.0  # overview: wait at most this long per pose for fresh frames and stable tracks
     overview_min_frames: 8  # overview: processed frames to see after the arm stopped
     # grasp geometry
@@ -57,14 +57,18 @@ cube_pick_place:
     trim_settle_s: 0.25  # hover trim: wait before each measurement
     refine_min_shift_mm: 2.0  # re-target when the close-up estimate moved more than this
     refine_max_shift_mm: 40.0  # abort when the close-up estimate moved more than this
-    refine_timeout_s: 3.0  # wait this long for a stable close-up estimate
+    refine_timeout_s: 3.0  # wait this long for refine_min_obs agreeing close-up observations
+    refine_extra_s: 2.0  # ...and up to this much longer while the cube is seen but not yet agreed on
+    refine_min_obs: 4  # close-up: per-frame observations after the settle that must agree (the detector's filter still holds the far view and is not used here)
+    refine_agree_mm: 3.0  # close-up: every observation within this of their median (and obs_max_yaw_spread_deg)
+    refine_look_rise_m: 0.04  # close-up: cube in none of the frames at the hover: look again from this much higher (0 = off)
     refine_required: false  # abort when the close-up sees no stable cube (else keep the far estimate)
     # contact on the way down (arm)
     contact_joint: "shoulder_lift"  # joint whose lag (reference - feedback) shows a contact
     descend_contact_lag_deg: 1.5  # contact zone: lag rise over the moving baseline = contact
     free_descent_lag_deg: 4.5  # descent above the contact zone: lag over the hover baseline that stops it (safety net)
     contact_warmup_s: 0.4  # contact zone: the first part of the move learns the moving lag baseline
-    contact_zone_speed_factor: 0.5  # contact zone: descent speed x this (less tracking lag, more time to react)
+    contact_zone_speed_factor: 1.0  # contact zone: descent speed x this (0.5 halved it; slow joints stick-slip, the hand shook more at 3-6 deg/s than at 12, 2026-11-23)
     final_trim_tol_m: 0.003  # after the descent: trim again when the tip ended higher than its goal by more than this
     contact_zone_m: 0.035  # the last part of the descent (tip within this of its goal) runs with the tight contact threshold
     descend_lag_samples: 15  # controller states averaged after each step
@@ -97,6 +101,11 @@ cube_pick_place:
     torque_limit_topic: "/gripper_torque_controller/commands"  # std_msgs/Float64MultiArray command topic
     torque_limit_timeout_s: 3.0  # abort when the torque_limit readback does not match within this
     torque_limit_required: true  # abort when the torque limit interface is missing (skipped on mock hardware)
+    # other cubes (clutter)
+    clutter_check: true  # treat the other cubes the node knows (memory) as obstacles for the jaws
+    clutter_margin_mm: 5.0  # smallest distance between the hand (jaw / camera meshes below a cube's top + this) and another cube along the hover-descent-grasp move
+    clutter_min_side_mm: 8.0  # smallest opening tried when the full one hits a neighbour: jaw gap = cube + 2 x this
+    clutter_max_age_s: 600.0  # cubes last seen longer ago than this are not obstacles
     # place
     release_gap: 0.002  # release this much above the surface (contact stops earlier)
     stack_max_age_s: 60.0  # the cube to stack on must have been seen this recently

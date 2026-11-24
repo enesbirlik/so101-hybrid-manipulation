@@ -41,12 +41,14 @@ constexpr float GRASP_TIP_HEIGHT = 0.011f;   // fixed jaw tip above the cube's b
 constexpr float HOLD_GRIPPER_RAD = 12.5f * DEG2RAD;   // jaws closed on a 30 mm cube
 const char * MOVING_JAW_LINK = "moving_jaw_so101_v1_link";
 
-// Colour-blind friendly cube colours by id (Okabe-Ito, without the black and the dark blue that
-// vanish on the dark background).
+// Cube colours by id: the colours of the printed cube sheet (K0 pink, K1 blue, K2 green, K3 peach,
+// K4 lilac, K5 magenta), a little more saturated to read on the dark background. Same values as
+// CUBE_COLOURS in so101_perception/scripts/cube_detector_node.py, so the 3D view, the detector's
+// markers and the real cubes match.
 Color cube_color(int k)
 {
-  static const Color palette[] = {{230, 159, 0, 255}, {86, 180, 233, 255}, {0, 158, 115, 255},
-    {240, 228, 66, 255}, {213, 94, 0, 255}, {204, 121, 167, 255}};
+  static const Color palette[] = {{245, 140, 140, 255}, {115, 179, 242, 255}, {128, 217, 128, 255},
+    {250, 191, 102, 255}, {179, 140, 242, 255}, {242, 128, 204, 255}};
   return k < 0 ? Color{190, 200, 204, 255} : palette[k % 6];
 }
 
@@ -1240,9 +1242,9 @@ void RobotView::draw_table_labels(ImVec2 origin) const
 
 void RobotView::draw_pick_place_3d() const
 {
-  // the reach band: where the pick node can grasp / put down a cube, per pan from its reach table
-  // (the "every yaw" band clear, the "some yaw" band fainter), or the fixed ring without one;
-  // brighter while a cube is held
+  // the reach band, per pan from the pick node's reach table, or the fixed ring without one:
+  // nothing held, where a cube can be picked (the "every yaw" band clear, the "some yaw" band
+  // fainter); a cube held, brighter and only where it can be put down (the place band)
   const float a = holding_ ? 0.55f : 0.24f;
   const ImVec4 & ok = theme::OK;
   const float z = table_top_ + 0.001f;
@@ -1256,8 +1258,10 @@ void RobotView::draw_pick_place_3d() const
     };
   rlDrawRenderBatchActive();
   rlDisableDepthMask();
-  for (int pass = 0; pass < (table ? 2 : 1); ++pass) {
-    const bool every = pass == 1 || !table;
+  const bool place = holding_ && has_place_band(in_reach_);
+  for (int pass = 0; pass < (table && !place ? 2 : 1); ++pass) {
+    const bool every = pass == 1 || !table || place;
+    const Reach kind = place ? Reach::Place : pass == 1 ? Reach::EveryYaw : Reach::SomeYaw;
     const float k = every ? 1.0f : 0.45f;   // the some-yaw band fainter
     const Color fill = theme::to_raylib(ImVec4(ok.x, ok.y, ok.z, a * (every ? 0.28f : 0.14f)));
     const Color edge = theme::to_raylib(ImVec4(ok.x, ok.y, ok.z, a * k));
@@ -1266,7 +1270,7 @@ void RobotView::draw_pick_place_3d() const
     for (int i = 0; i <= steps; ++i) {
       const float pan = pan0 + (pan1 - pan0) * i / steps;
       float n = 0, f = 0;
-      const bool ok_here = reach_band(in_reach_, pan, every, n, f);
+      const bool ok_here = reach_band(in_reach_, pan, kind, n, f);
       if (ok_here && prev) {
         const float pp = pan0 + (pan1 - pan0) * (i - 1) / steps;
         rlBegin(RL_TRIANGLES);
@@ -1320,6 +1324,7 @@ std::string RobotView::click(State & state, Vector2 px)
   // the nearest cube box (enlarged a little: they are small on screen), in the cube's own frame
   int hit_cube = -1;
   float hit_distance = 1e9f;
+  float hit_x = 0.0f, hit_y = 0.0f;   // the hit cube's centre (base_link)
   for (const auto & vc : cubes_) {
     if (vc.state == CubeState::Held) {   // in the jaws: not a target, and must not block the table
       continue;
@@ -1334,6 +1339,8 @@ std::string RobotView::click(State & state, Vector2 px)
     if (hit.hit && hit.distance < hit_distance) {
       hit_distance = hit.distance;
       hit_cube = vc.index;
+      hit_x = c.position[0];
+      hit_y = c.position[1];
     }
   }
   // the table plane
@@ -1371,13 +1378,21 @@ std::string RobotView::click(State & state, Vector2 px)
     if (hit_cube == held) {
       sel.message = "K" + std::to_string(held) + " is the held cube";
     } else {
-      sel.stack_on = hit_cube;
+      // the held cube goes down on top of it: the same place band as a place on the table
+      // (2026-11-24: a stack on a cube at 38 cm was offered and the pick node refused it)
+      const std::string problem = reach_problem(state.reach, hit_x, hit_y, true);
       sel.has_target = false;
+      if (!problem.empty()) {
+        sel.stack_on = -1;
+        sel.message = "cannot stack on K" + std::to_string(hit_cube) + ": " + problem;
+        return sel.message;
+      }
+      sel.stack_on = hit_cube;
       snprintf(buf, sizeof(buf), "stack target K%d", hit_cube);
       return buf;
     }
   } else if (hit_table) {
-    const std::string problem = reach_problem(state.reach, tx, ty);
+    const std::string problem = reach_problem(state.reach, tx, ty, true);
     if (problem.empty()) {
       sel.has_target = true;
       sel.x = tx;

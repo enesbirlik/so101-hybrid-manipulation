@@ -41,9 +41,9 @@ ros2 launch so101_manipulation pick_place.launch.py fake_cube:=true fake_x:=0.22
 | `/cube_pick_place/open_gripper` | `std_srvs/Trigger` | open slowly where the arm is (the only "let go" besides PlaceCube) |
 | `/cube_pick_place/overview` | `std_srvs/Trigger` | move to the overview pose, look at the table, answer with the cubes seen (JSON, below) |
 | `/cube_pick_place/state` | `std_msgs/String`, transient local (latched), reliable, depth 1 | node state as JSON (below), on every change and at 1 Hz |
-| `/cube_pick_place/reach` | `std_msgs/Float32MultiArray`, transient local (latched), depth 1 | reach table for the dashboard, one row per pan: `[pan_deg, near_m, far_m, near_all_m, far_all_m]` (below) |
+| `/cube_pick_place/reach` | `std_msgs/Float32MultiArray`, transient local (latched), depth 1 | reach table for the dashboard, one row per pan: `[pan_deg, near_m, far_m, near_all_m, far_all_m, place_near_m, place_far_m]` (below) |
 
-**`/cube_pick_place/reach`**: published once at start-up from `config/reach.yaml` (`reach_file`), which `python3 -m so101_manipulation.reach_map --out DIR --yaml config/reach.yaml` computes offline with this planner (radius from base_link's origin, pans and cube yaws in base_link). `layout.dim[0]` = rows (label `pan`), `layout.dim[1]` = 5 columns (label lists them). `near_m` / `far_m`: the closest / farthest radius at which SOME tested cube yaw can be grasped (the band between them is contiguous at the 1 cm scan step); `near_all_m` / `far_all_m`: where EVERY tested yaw (0, 15, 30, 45 deg) can. NaN = nothing at that pan. The node warns when the table was computed with another `max_tilt_deg`, `max_close_elev_deg` or `roll_limit_deg`. Between the pans, interpolate; outside ±60 deg nothing was computed.
+**`/cube_pick_place/reach`**: published once at start-up from `config/reach.yaml` (`reach_file`), which `python3 -m so101_manipulation.reach_map --out DIR --yaml config/reach.yaml` computes offline with this planner (radius from base_link's origin, pans and cube yaws in base_link). `layout.dim[0]` = rows (label `pan`), `layout.dim[1]` = 7 columns (label lists them). `near_m` / `far_m`: the closest / farthest radius at which SOME tested cube yaw can be grasped (the band between them is contiguous at the 1 cm scan step); `near_all_m` / `far_all_m`: where EVERY tested yaw (0, 15, 30, 45 deg) can. `place_near_m` / `place_far_m`: the some-yaw band with **vertical jaws** (`--max-tilt 0`), where a held cube can be put down: a vertical hold goes down vertically, a tilted hold reaches no further (18-30 cm, see below). At pan 0 that is 12-32 cm against 11-43 cm for a pick; on 2026-11-24 four places clicked at 34 cm inside the pick band were refused with "no place pose". `reach_map` with `--yaml` computes both bands; `--place-from DIR/reach_v2_0_summary.json` merges a vertical run into an existing yaml. NaN = nothing at that pan (place columns: an older table; the node warns and the dashboard falls back to the pick band). The node warns when the table was computed with another `max_tilt_deg`, `max_close_elev_deg` or `roll_limit_deg`. Between the pans, interpolate; outside ±60 deg nothing was computed.
 
 **`/cube_pick_place/overview`** (`std_srvs/Trigger`, empty request). Rejected at once (`success: false`, `{"error": "busy with a pick/place goal", "cubes": []}`) while a goal or service runs. Otherwise: jaws to `search_gripper_deg` (unless a cube is held: the grip stays and the cube counts in the clearance), a clearance-checked transit to each pose of `overview_poses_deg` (via a raised pose if needed), then a wait until `overview_min_frames` frames were processed after the arm stopped (+`obs_settle_s`) and every cube seen is stable, at most `overview_wait_s`. `success` = moved and saw frames from the detector. `message` is JSON:
 
@@ -78,14 +78,36 @@ Custom actions because no standard type fits a "pick cube k" goal with these pha
 **PickCube**
 
 1. **search** (details below): none at all when the cube is fresh and stable; else a short look where the arm is, then the views in order: aimed at where the cube was last seen, the overview, autograb's views.
-2. **approach**: plan the grasp (below), transit to the hover pose, opening the jaws to `open_deg` on the way (`open_during_approach`: the path is checked for the closed, half-open and open jaws; the jaws are opened only where the open jaws clear the table by 2 cm).
-3. **refine**: at the hover, wait for a fresh stable estimate (observations only count from `obs_settle_s` after the arm stopped), re-target when it moved > `refine_min_shift_mm`, at most `refine_max_iter` times; abort beyond `refine_max_shift_mm`. Any face of the cube counts (the 2026-11-21 script skipped the refinement when the close-up saw a different part of the object); the yaw is compared modulo 90°.
+2. **approach**: plan the grasp (below) clear of the other cubes (see [Other cubes](#other-cubes-clutter)), transit to the hover pose, opening the jaws to the plan's opening (`open_deg`, smaller among neighbours) on the way (`open_during_approach`: the path is checked for the closed, half-open and open jaws; the jaws are opened only where the open jaws clear the table by 2 cm).
+3. **refine** (below): at the hover, wait for `refine_min_obs` fresh per-frame observations that agree (they only count from `obs_settle_s` after the arm stopped), re-target when they moved the cube > `refine_min_shift_mm`, at most `refine_max_iter` times; abort beyond `refine_max_shift_mm`. Any face of the cube counts (the 2026-11-21 script skipped the refinement when the close-up saw a different part of the object); the yaw is compared modulo 90°.
 4. **descend**: torque limit lowered (and confirmed) at the hover; the hover trim takes the servos' static error out and is reused below (short passes: measure after `trim_settle_s`, apply the whole error in one `trim_move_s` move, a second pass only if still beyond `trim_tol_deg`); then one continuous move down to the grasp height through the `descend_step` points; contact stop when the `contact_joint` lag (reference − feedback) rises more than `descend_contact_lag_deg` over the hover baseline: back up to the hover and abort.
 5. **grasp**: the soft grasp (below).
 6. **verify**: held / empty / uncertain from the jaw angle and current. Not held: open slowly, rise to the hover, abort.
 7. **lift**: back to the hover in one continuous move through the descent points (with the hover trim's bias, no stop at each point); for a tilted grasp that is back out ALONG THE JAW AXIS first, then straight up to the exit pose (`GraspPlan.retreat_poses`); judge the grip again (lost: abort, gripper left as it is). A miss at the bottom (back off) and a contact stop on the way down retreat along the same line.
 
-**PlaceCube**: **carry** (transit to the hover over the target, the carried cube counted in the clearance), **refine** (stacking only: close-up of the lower cube), **descend** (contact stop = the cube is down), **release** (open slowly, then restore the torque limit), **retreat** (back up to the hover, one continuous move with the trim bias). Stacking aligns the closing direction with the lower cube's faces and puts the release at its top.
+**PlaceCube**: **carry** (transit to the hover over the target, the carried cube counted in the clearance; the place is refused before moving if the cube or the jaws would meet another cube), **refine** (stacking only: close-up of the lower cube, same rule as the pick's), **descend** (contact stop = the cube is down), **release** (open slowly to the plan's release opening, then restore the torque limit), **retreat** (back up to the hover, one continuous move with the trim bias). Stacking aligns the closing direction with the lower cube's faces and puts the release at its top.
+
+### Close-up refinement
+
+On 2026-11-22 the real arm often logged "no stable close-up estimate: keeping the far one", and when it did, the cube sat ~1 cm off-centre along the jaw pads and stacked cubes landed 6-12 mm off. Cause, from the code and an offline replay of the real frames (`test/test_refine_replay.py`):
+
+- The refine read `/cubes/tracked`. The detector's filter keeps the last 20 observations of a cube **from every view**, so at the hover its window still held the overview's far observations. A close-up 4-10 mm away (less than the filter's 10 mm jump) joins them: for ~10 frames the filter's median stays at the far position, its spread is > 2 mm until ~18 of the 20 are close-ups (filter not stable), and an observation right at ~10 mm alternates between "held back" and "added" (never a restart, never stable).
+- The adapter's fallback ("fresh observations agree") looked at the filter's own **output** per image stamp. Right after the move those outputs all sit at the far position and agree, so the refine accepted the far position as the close-up (shift ~0 mm, logged as a successful close-up). Replayed with the real per-frame estimates of K2 and K4 from `~/so101_data/cubes/20261122/rest_*.jpg`, the close-up moved by 5, 7 or 9 mm: the old refine returned the far position every time. Otherwise it waited out `refine_timeout_s` and kept the far one.
+- Not the cause in the model: at the hover (camera ~16 cm above the table, 13 cm above the cube's top) the fisheye model puts the top marker 8° off the optical axis, ~50 px wide at 640 px, ≥ 30 px clear of the jaw silhouettes, also with the cube 2 cm off-centre either way. The real views of 2026-11-22 (`~/so101_data/stack_20261122`, joint angles not saved) show the cube lower in the image than the model predicts, so this is checked on the arm (below).
+
+Now (`close_up`): only **per-frame** observations (`/cubes/detections`, by image time) taken from `obs_settle_s` after the arm stopped count, never what a filter remembers; `refine_min_obs` (4) of them within `refine_agree_mm` (3 mm) and `obs_max_yaw_spread_deg` of their median give the close-up (~0.35 s at 12 fps). It waits `refine_timeout_s`, and up to `refine_extra_s` longer while the cube is seen but its observations do not agree yet. When nothing usable came, the log says why: no frame processed at all (detector not running, or its motion gate: frames are ignored while any joint reports > 0.1 rad/s, e.g. a servo hunting at the hover), the cube in none of N frames, or N observations with their spread. If the cube is in none of the frames from the hover, the hand rises `refine_look_rise_m` (4 cm) and looks again, then comes back down to the re-planned hover. The same rule refines the lower cube of a stack. `/cubes/tracked`'s fallback (`TrackedCubeTracker`) now also uses the per-frame detections.
+
+### Other cubes (clutter)
+
+A pick of K2 failed on 2026-11-22 with K4 4.7 cm away (centre to centre): the jaws open to a 53 mm gap, so a jaw pad lands 27-34 mm from the cube's centre (the jaw is ~1-1.6 cm thick in its lowest 2.5 cm), where the neighbour's face was (47 − 15 = 32 mm). The planner now treats every other cube the node knows as an obstacle (`clutter.py`):
+
+- **Obstacles**: the node's memory of where each cube was last seen (`clutter_max_age_s`), except the target, the held cube, the cube to stack on and the cubes under the target (its support, like the table); only those within 16 cm of the target. Each is an upright box: its square (edge, yaw) from the table up to its top (a 2-stack is 6 cm tall).
+- **Hand footprint**: the mesh points of `gripper_link` (body + fixed jaw), the moving jaw (at the gripper angle) and the wrist camera, thinned to a 2 mm grid. At each arm pose, the points below an obstacle's top + `clutter_margin_mm` are projected onto the table, one convex hull per link (the two jaws separately, so the gap between them stays free); the clearance is the 2-D distance from those hulls to the obstacle's square (negative = overlap). Only the part of the hand low enough to touch the box counts: jaws passing over a lower cube are fine, a 3-stack next to the target also meets the camera.
+- **Checked poses**: the hover, every descent point down to the grasp (the lift and the back-off reuse them), the exit of a tilted lift. ~10 ms per plan.
+- **Choice**: the planner drops every closing option (of the 4, within the roll limit) whose hand comes closer than `clutter_margin_mm` (5 mm) to a neighbour, and picks the best of the rest as before (smallest |roll|). If the vertical grasps all meet a neighbour, the tilt sweep may lean up to 15° to get round it. If none clears, smaller openings are tried: the middle, then a jaw gap of cube + 2 × `clutter_min_side_mm` (24.4° for 30 mm / 8 mm; never below the contact window, far above the floor), skipping an opening when the rejected poses show it cannot clear. Else the pick fails in `approach`, before any move, naming the neighbour: `no clear grasp of cube_2: cube_4 at (26.7, 0.0) cm, 4.7 cm away is in the way: the hand comes within +2 mm of it (margin 5 mm) for every closing direction, also with the jaws opened only to 24.4 deg`. The chosen opening is used for the approach, the descent and a back-off; the node logs `clutter: 1 cube(s) near cube_2 (closest cube_4 ..., 4.7 cm away): closing along +110 deg, jaws 30.0 deg, hand 25 mm from cube_4; 1 option(s) dropped`.
+- **Place**: the same check for the jaws at the hold angle along the descent, the placed cube's own square (≥ margin from every neighbour), and the release: the largest of the openings above whose jaws clear (the release and the retreat then use it). A free-yaw place whose roll-free plan meets a neighbour tries closing directions every 15°. `place --on k`: cube *k* (and what is under it) is the target, the others are obstacles. Refused in `carry` with the neighbour's name.
+- **Timing**: no neighbour within 16 cm: no change. A neighbour: the closing options are already solved; the check adds ~10 ms each. A smaller opening is a new plan (~0.5-2 s); a refusal at a cube in vertical reach takes 1-4 s (offline, this machine).
+- Not covered: the transit (the path between poses is checked against the table, with 45 mm clearance, not against cubes: a 2-stack is 60 mm tall), the wide-open exit after a 3-level stack (`retreat_wide_open_deg`), cubes the node has not seen (run an overview first), and a cube moved by hand after it was last seen.
 
 ### Search
 
@@ -102,17 +124,18 @@ The jaws go to `search_gripper_deg` (never below the floor) while searching.
 
 ### Overview pose
 
-`overview_poses_deg` = **[22.8, −77.0, 40.9, 89.4, −72.4]°** (pan, lift, elbow, wrist_flex, roll), from `grasp.overview_pose()`: start with the camera ~28 cm above the table looking straight down at 22 cm out (least squares like `view_pose`, pan and roll free: the camera sits beside the jaws, so looking straight down takes a large wrist_roll), then a seeded random local search on the coverage itself, keeping |roll| ≤ 85°, wrist_flex 5° inside its limit, the camera ≥ 24 cm up, the arm ≥ 6 cm above the table. Coverage (`grasp.view_coverage`) = the share of cube positions on a 1 cm grid whose top face is in the 1280×720 fisheye image (equidistant model of `wrist_camera_fisheye.yaml`, 10 px margin, < 85° off axis), not behind the jaws (projected hulls of `gripper_link` and the moving jaw at `search_gripper_deg`), the 22 mm top marker ≥ 30 px (15 px at the detector's 640 px; the smallest is 42 px) and seen at a view cosine ≥ 0.3.
+`overview_poses_deg` = **[0.0, −74.3, 41.4, 90.0, −85.0]°** (pan, lift, elbow, wrist_flex, roll), from `grasp.overview_pose(..., pan_deg=0)`. The arm faces straight ahead: the free-pan optimum (pan 22.8°, roll −72.4°, used until 2026-11-24) looked like the arm was looking off to one side, and with the pan held at 0 the coverage is better on every area wider than the work area (table). The search: start with the camera ~28 cm above the table looking straight down at 22 cm out (least squares like `view_pose`, pan and roll free: the camera sits beside the jaws, so looking straight down takes a large wrist_roll), then a seeded random local search on the coverage itself, keeping |roll| ≤ 85°, wrist_flex 5° inside its limit, the camera ≥ 24 cm up, the arm ≥ 6 cm above the table. Coverage (`grasp.view_coverage`) = the share of cube positions on a 1 cm grid whose top face is in the 1280×720 fisheye image (equidistant model of `wrist_camera_fisheye.yaml`, 10 px margin, < 85° off axis), not behind the jaws (projected hulls of `gripper_link` and the moving jaw at `search_gripper_deg`), the 22 mm top marker ≥ 30 px (15 px at the detector's 640 px; the smallest is 42 px) and seen at a view cosine ≥ 0.3.
 
 | | camera above the table | 15–30 cm × ±15 cm | 15–30 × ±20 cm | 12–34 × ±22 cm |
 |---|---|---|---|---|
-| overview | 24.8 cm, axis 15° off vertical | **99 %** (misses 5 points at 15–16 cm, y −1…+3 cm: behind the jaws) | 88 % | 72 % |
+| overview (pan 0) | 24.3 cm, axis 7.6° off vertical | **97 %** (misses points at 15–16 cm, y −8…+2 cm: behind the jaws) | 98 % | 82 % |
+| free pan (until 2026-11-24) | 24.8 cm, axis 15° off vertical | 99 % | 88 % | 72 % |
 | autograb's *near* view (pan 0) | 19.9 cm | 48 % | | |
 
 One pose is enough, so there is one. Recompute after a new hand-eye or kinematic calibration (~40 s):
 
 ```bash
-python3 -c "import math, numpy as np; from so101_manipulation import grasp as g; from so101_manipulation.kinematics import ArmModel, perception_config_dir as d; m = ArmModel(); q, f = g.overview_pose(m, g.load_hand_eye(d() / 'wrist_camera_hand_eye.yaml'), g.load_fisheye(d() / 'wrist_camera_fisheye.yaml')); print(np.degrees(q).round(1).tolist(), f)"
+python3 -c "import math, numpy as np; from so101_manipulation import grasp as g; from so101_manipulation.kinematics import ArmModel, perception_config_dir as d; m = ArmModel(); q, f = g.overview_pose(m, g.load_hand_eye(d() / 'wrist_camera_hand_eye.yaml'), g.load_fisheye(d() / 'wrist_camera_fisheye.yaml'), pan_deg=0); print(np.degrees(q).round(1).tolist(), f)"
 ```
 
 The node logs the coverage of the configured pose(s) at startup.
@@ -124,7 +147,7 @@ Every pick and place times its phases (`timing.PhaseTimer`; a retried phase adds
 ## Grasp geometry (`grasp.py`)
 
 - `gripper_frame_link` is the **fixed** jaw tip. At 30° open the gap midpoint is ~3 cm beside it, so the IK puts the point `gap_fraction` of the way from the fixed to the moving jaw tip (moving jaw tip = the mesh vertex farthest from its joint) over the cube centre, and the fixed tip at the grasp height.
-- The jaws close along a face normal: 4 options (`yaw + k·90°`). Options whose wrist roll would be beyond `roll_limit_deg` are dropped (the camera cable tore at −124°); the rest are solved (hover, every descent step, grasp, with the same closing direction) and the one with a good IK and the smallest |roll| wins.
+- The jaws close along a face normal: 4 options (`yaw + k·90°`). Options whose wrist roll would be beyond `roll_limit_deg` are dropped (the camera cable tore at −124°); the rest are solved (hover, every descent step, grasp, with the same closing direction) and the one with a good IK, clear of the other cubes (`accept`, see [Other cubes](#other-cubes-clutter)), and the smallest |roll| wins.
 - Vertical jaws reach ~14-30 cm out. Elsewhere (`allow_tilt`) the **tilt sweep** (below), else a clear "reach" message. The hover is lowered from `hover_height` towards `hover_min_height` when needed. A cube on another cube is grasped relative to its own bottom.
 - **Tilt sweep** (`plan_tilted`, replaces the weighted "tilted" pass that preferred missing the cube by 2-4 cm over leaning more than ~3.5°). The 5-DOF arm keeps the jaw axis in its own vertical plane, so the jaws can only LEAN in that plane: tips away from the base for far cubes (the approach comes from the robot's side), towards the base for near ones. Leans `±tilt_step_deg, ±2·step, …` up to `max_tilt_deg`, smallest first; for each lean and closing option one exact solve of 5 equations in 5 joints: grasp point (3, hard, `ik_tolerance_mm`), lean (1, hard), closing direction along the face normal (1, soft within `close_tol` 3°, because |wrist_roll| ≤ 90° can leave it 1-2° short). The first lean with a full plan wins; among its options the smallest |roll| and the most horizontal closing direction. `max_close_elev_deg` bounds how far the closing direction may tip out of the horizontal (a jaw closing along the leaning plane meets the cube's vertical faces at that angle).
 - Grasp point of a tilted grasp: the gap point lies on the jaw axis through the cube centre at **mid-height**, `d` beyond it, with `d` such that vertical jaws would put it where the vertical planner does: the pads stay centred on the cube's mid-height as the jaws lean. If the lowest point of the hand (table model, moving jaw included) is below `min_final_clearance_mm`, the grasp point rises in 2 mm steps (≤ 6 mm). The gap-midpoint correction is the same 3-D point in `gripper_link`, so it is exact in the tilted frame.
@@ -174,20 +197,25 @@ Mock hardware has no contact and no deadband: without `sim_contact_deg` a pick e
 
 `CubeTracker.get(cube_id, since)` → `CubeEstimate(centre, yaw, stable, spread_mm, yaw_spread_deg, age_s, count)` is the only place the node reads perception. `cube_source`:
 
-- `tracked`: `/cubes/tracked`, the detector's temporal filter (score ≥ 0.5 = stable, spread from the covariance, stamp = last image the cube was seen in). Stable for the node also needs `obs_min_fresh` new stamps after `since`; if the filter still lags (old far-view observations in its window), `obs_min_count` fresh observations that agree count as stable with their own median.
-- `detections`: `/cubes/detections`, the node's own median window (`obs_*`).
+- `tracked`: `/cubes/tracked`, the detector's temporal filter (score ≥ 0.5 = stable, spread from the covariance, stamp = last image the cube was seen in). Stable for the node also needs `obs_min_fresh` new stamps after `since`; if the filter still lags (old far-view observations in its window), `obs_min_count` fresh **per-frame** observations (`/cubes/detections`) that agree count as stable with their own median. (Until 2026-11-22 this fallback used the filter's own outputs, which agree on the old view right after a move.)
+- `detections`: `/cubes/detections`, the node's own median window (`obs_*`), by image time.
 - `auto` (default): tracked for a cube the filter reported in the last 2 s, else detections.
+
+`CubeTracker.fresh(cube_id, since, min_count, max_spread_mm)`: per-frame observations taken after `since` only (None if there are none); the close-up refinement uses it.
 
 ## Tests
 
 ```bash
-cd so101_manipulation && python3 -m pytest -q test          # no ROS graph needed: geometry, soft grasp, close ramp, search views, overview coverage, adapter, timing, torque hook, params
+cd so101_manipulation && python3 -m pytest -q test          # no ROS graph needed: geometry, soft grasp, close ramp, search views, overview coverage, adapter, timing, torque hook, params, clutter, refine replay
 export ROS_DOMAIN_ID=42                                       # mock integration test, see its docstring
 ros2 launch so101_moveit_config demo.launch.py rviz:=false &
-python3 test/smoke_mock.py                                    # miss, pick_place, search, reach, cancel, overview, memory, far, far40, near, near11
+python3 test/smoke_mock.py                                    # miss, pick_place, search, reach, cancel, overview, memory, far, far40, near, near11, refine, clutter, clutter_refuse
 ```
 
-`test/smoke_mock.py` starts its own FAKE cube publisher (`fake_cube_publisher`: `/cubes/detections` and `/cubes/tracked`, frames ignored (not published) while the arm moves, optional field-of-view cone, `fov_check` through the fisheye model, far-view bias) and node per scenario, and refuses to run on domain 0 or on real hardware.
+- `test/test_refine_replay.py`: the real detector on the real rest-pose frames (`~/so101_data/cubes/20261122`, skipped without them), the far view, then a close-up moved by 0-15 mm, through the detector's filter and the adapter: the close-up follows the close view within 1 mm in < 0.5 s; the old adapter's fallback kept the far position for 5-9 mm.
+- `test/test_clutter.py`: the jaw meshes against a neighbour 4.7 cm away on each side, the closing direction that turns away from it, the smaller opening, the refusal message, the real K2/K4 positions from those frames (4.9 cm apart), the place check (placed cube, release opening).
+
+`test/smoke_mock.py` starts its own FAKE cube publisher(s) (one per cube; `fake_cube_publisher`: `/cubes/detections` and `/cubes/tracked`, frames ignored (not published) while the arm moves, optional field-of-view cone, `fov_check` through the fisheye model, far-view bias) and node per scenario, and refuses to run on domain 0 or on real hardware.
 
 ## Files
 
@@ -195,6 +223,7 @@ python3 test/smoke_mock.py                                    # miss, pick_place
 |---|---|
 | `so101_manipulation/pick_place_node.py` | action server, phases, parameters (`PARAMS`) |
 | `so101_manipulation/grasp.py` | grasp IK, closing options, reach, view poses, fisheye visibility / coverage, overview and aimed views, search order |
+| `so101_manipulation/clutter.py` | other cubes as obstacles: hand footprint from the jaw / camera meshes, clearance, accept check for the planner, smaller openings, refusal message |
 | `so101_manipulation/soft_grasp.py` | floor, contact detector, two-speed close ramp, hold target, held / empty |
 | `so101_manipulation/timing.py` | per-phase timer |
 | `so101_manipulation/reach_map.py` | offline reach map with the planner (`python3 -m so101_manipulation.reach_map`), the `~/reach` publisher |
@@ -213,8 +242,10 @@ python3 test/smoke_mock.py                                    # miss, pick_place
 - `grasp_tip_height` 11 mm with `table_z` known to ~2.4 mm rms: the moving jaw hangs ~6 mm lower than the fixed tip at 30° open (lowest point ~4.7 mm above the table in the model).
 - The descent contact thresholds come from the toy grasp; a paper cube may give a weaker shoulder_lift lag when a jaw lands on it.
 - Close-up visibility of the cube at the hover with the jaws open, and the far/close accuracy, are from one session.
+- **Close-up refinement (2026-11-22 fix) has run on mock and offline replays only.** Check on the arm with `pick k --hover-only` after an overview: the refine line should read `close-up 1: ... from 4 frames (spread x mm), shift y mm` with y the real far/near difference (it was silently ~0 before); "keeping the far one" should now carry its reason. If it says "no frame processed", the detector's motion gate (0.1 rad/s on any joint, incl. the gripper) is tripping at the hover (servo hunting); if "in none of N frames", save a wrist frame at the hover together with `/joint_states` to compare the cube's place in the image with the fisheye model (the 2026-11-22 views suggest it sits lower than the model says).
+- **Clutter (2026-11-22) has run on mock and offline only.** The jaw footprint is the convex hull of the mesh points per link below a neighbour's top; the real jaws and the cubes' positions (2-3 mm) decide whether 5 mm of margin is enough. Check: two cubes 4.5-5 cm apart, `pick --hover-only` (log `clutter: ... closing along ...`), look at the jaws over the neighbour from the side, then a real pick; and a place 3 cm next to a cube is refused. Run an overview first so the node knows every cube.
 - Stacking (`place --on`) has not run on mock with two cubes or on the real arm.
-- Overview pose, aimed views, early view exit, two-speed close, short hover trim and continuous lift/retreat (2026-11-22) have run on mock only. The coverage is a model: the jaw silhouette is the convex hull of the meshes, the marker size and view-angle limits are estimates, and the detector's real range at the image border is untested. The overview needs wrist_roll −72° and wrist_flex 89°.
+- Overview pose, aimed views, early view exit, two-speed close, short hover trim and continuous lift/retreat (2026-11-22) have run on mock only. The coverage is a model: the jaw silhouette is the convex hull of the meshes, the marker size and view-angle limits are estimates, and the detector's real range at the image border is untested. The overview needs wrist_roll −85° (roll limit 90°) and wrist_flex 90°.
 - `search_empty_frames` 6 (~0.4 s at 15 fps) may leave a view where a small, far cube is only found in some frames; raise it if searches miss cubes that are in view.
 - Hover trim with one 0.4 s move and 0.25 s settles: the measurement after 0.25 s may still be settling (stick-slip at P 16); `trim_max_iter` 2 allows one more pass.
 
@@ -253,7 +284,7 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `overview_poses_deg` | `[22.8, -77.0, 40.9, 89.4, -72.4]` | overview pose(s), 5 joints each (pan, lift, elbow, wrist_flex, roll) [deg], flat list; grasp.overview_pose() |
+| `overview_poses_deg` | `[0.0, -74.3, 41.4, 90.0, -85.0]` | overview pose(s), 5 joints each (pan, lift, elbow, wrist_flex, roll) [deg], flat list; grasp.overview_pose() |
 | `overview_wait_s` | `3.0` | overview: wait at most this long per pose for fresh frames and stable tracks |
 | `overview_min_frames` | `8` | overview: processed frames to see after the arm stopped |
 
@@ -295,8 +326,21 @@ All in `config/pick_place.yaml`. Lengths in m unless `_mm`, angles in degrees, s
 | `trim_settle_s` | `0.25` | hover trim: wait before each measurement |
 | `refine_min_shift_mm` | `2.0` | re-target when the close-up estimate moved more than this |
 | `refine_max_shift_mm` | `40.0` | abort when the close-up estimate moved more than this |
-| `refine_timeout_s` | `3.0` | wait this long for a stable close-up estimate |
+| `refine_timeout_s` | `3.0` | wait this long for refine_min_obs agreeing close-up observations |
+| `refine_extra_s` | `2.0` | ...and up to this much longer while the cube is seen but not yet agreed on |
+| `refine_min_obs` | `4` | close-up: per-frame observations after the settle that must agree (the detector's filter still holds the far view and is not used here) |
+| `refine_agree_mm` | `3.0` | close-up: every observation within this of their median (and obs_max_yaw_spread_deg) |
+| `refine_look_rise_m` | `0.04` | close-up: cube in none of the frames at the hover: look again from this much higher (0 = off) |
 | `refine_required` | `false` | abort when the close-up sees no stable cube (else keep the far estimate) |
+
+**Other cubes (clutter)**
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `clutter_check` | `true` | treat the other cubes the node knows (memory) as obstacles for the jaws |
+| `clutter_margin_mm` | `5.0` | smallest distance between the hand (jaw / camera meshes below a cube's top + this) and another cube along the hover-descent-grasp move |
+| `clutter_min_side_mm` | `8.0` | smallest opening tried when the full one hits a neighbour: jaw gap = cube + 2 x this |
+| `clutter_max_age_s` | `600.0` | cubes last seen longer ago than this are not obstacles |
 
 **Contact on the way down (arm)**
 

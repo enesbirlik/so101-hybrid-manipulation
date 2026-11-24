@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from so101_manipulation.reach_map import COLUMNS, classify, load_reach, summarize, write_yaml  # noqa: E402
+from so101_manipulation.reach_map import COLUMNS, classify, load_reach, merge_place, summarize, write_yaml  # noqa: E402,E501
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -46,15 +46,34 @@ def test_yaml_roundtrip(tmp_path):
     write_yaml(p, summarize(rows()), {"max_tilt_deg": 45.0})
     r = load_reach(p)
     assert r["columns"] == COLUMNS and r["max_tilt_deg"] == 45.0
-    assert r["rows"] == [[0.0, 0.09, 0.42, 0.10, 0.41]]
+    row = r["rows"][0]
+    assert row[:5] == [0.0, 0.09, 0.42, 0.10, 0.41] and math.isnan(row[5]) and math.isnan(row[6])
+
+
+def test_place_band(tmp_path):
+    """write_yaml with a vertical-jaw summary fills place_*; merge_place adds it to an old 5-column table."""
+    place = [{"pan_deg": 0, "near_m": 0.12, "far_m": 0.31}]
+    p = tmp_path / "reach.yaml"
+    write_yaml(p, summarize(rows()), {"max_tilt_deg": 45.0}, place)
+    assert load_reach(p)["rows"] == [[0.0, 0.09, 0.42, 0.10, 0.41, 0.12, 0.31]]
+    old = tmp_path / "old.yaml"
+    old.write_text("reach:\n  columns: [pan_deg, near_m, far_m, near_all_m, far_all_m]\n"
+                   "  rows:\n  - [0.0, 0.09, 0.42, .nan, .nan]\n  max_tilt_deg: 45.0\n")
+    merge_place(old, place)
+    r = load_reach(old)
+    assert r["max_tilt_deg"] == 45.0 and r["rows"][0][:3] == [0.0, 0.09, 0.42] and r["rows"][0][5:] == [0.12, 0.31]
+    assert math.isnan(r["rows"][0][3])
 
 
 def test_shipped_reach_table():
     """config/reach.yaml: one row per pan, near < far, all-yaw band inside the some-yaw band."""
     r = load_reach(ROOT / "config" / "reach.yaml")
     assert r["columns"] == COLUMNS and len(r["rows"]) >= 5
-    for pan, near, far, near_all, far_all in r["rows"]:
+    for pan, near, far, near_all, far_all, place_near, place_far in r["rows"]:
         assert -90 <= pan <= 90
         assert 0.05 < near < far < 0.5
         if not math.isnan(near_all):
             assert near <= near_all <= far_all <= far
+        # the place band (vertical jaws) lies inside the pick band (which may lean)
+        assert near <= place_near < place_far <= far
+        assert place_far <= 0.33, "a vertical hold cannot be put down beyond ~32 cm (2026-11-24: refused at 34 cm)"

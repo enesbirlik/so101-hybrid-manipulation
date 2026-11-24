@@ -13,12 +13,18 @@ Sources (node parameter `cube_source`):
   spread_xy^2 / 2, [35] = spread_yaw^2. The detector ignores frames while the arm moves (and
   0.3 s after), so a "fresh" estimate needs a stamp after `since`. `TrackedState` additionally
   asks for `min_fresh` new stamps after `since`; if the filter's stable flag still lags behind (old
-  far-view observations in its window), `min_count` fresh observations that agree among
-  themselves count as stable too, with their own median.
+  far-view observations in its window), `min_count` fresh PER-FRAME observations
+  (/cubes/detections) that agree among themselves count as stable too, with their own median.
+  (Until 2026-11-22 that fallback used the filter's own output per stamp: right after a move the
+  filter's median still sits at the far view for ~10 frames, those outputs agree, and a close-up
+  4-10 mm away was "confirmed" at the far position.)
 - `detections`: /cubes/detections (one detection per cube per frame), own window per cube:
   robust median of the centre, circular median of the yaw modulo 90 deg, stable once
   `min_count` observations newer than `since` agree within `max_spread_mm` / `max_yaw_spread_deg`.
 - `auto` (default): `tracked` for a cube the filter reported in the last 2 s, else `detections`.
+
+`tracker.fresh(cube, since, min_count, max_spread_mm)` is the close-up check: per-frame
+observations only, only those after `since` (the filter's window would mix in the far view).
 
 All times are the receiving node's monotonic clock (seconds), so `since` can be "the moment the
 arm stopped at the view pose"; tracked stamps are converted with the age (ROS now - stamp).
@@ -84,7 +90,9 @@ class CubeWindow:
             self.obs.popleft()
 
     def estimate(self, cube_id, now, since=None, window_s=1.5, min_count=5, max_spread_mm=3.0,
-                 max_yaw_spread_deg=4.0, outlier_mm=8.0):
+                 max_yaw_spread_deg=4.0, outlier_mm=8.0, fresh_only=False):
+        """Robust estimate from the observations of the last `window_s` (and after `since`); with
+        nothing that new, the last known pose (never stable), or None if `fresh_only`."""
         if not self.obs:
             return None
         newest = self.obs[-1][0]
@@ -93,6 +101,8 @@ class CubeWindow:
             lo = max(lo, since)
         sel = [o for o in self.obs if o[0] >= lo]
         stable_possible = True
+        if not sel and fresh_only:
+            return None
         if not sel:
             # nothing new enough: report the last known pose, never stable
             sel = [o for o in self.obs if o[0] >= newest - window_s]
@@ -129,16 +139,15 @@ class TrackedState:
         if new_stamp:
             self.window.add(obs_t, centre, yaw, score)
 
-    def estimate(self, cube_id, now, since=None, min_fresh=3, window_s=1.5, min_count=5, max_spread_mm=3.0,
-                 max_yaw_spread_deg=4.0):
+    def estimate(self, cube_id, now, since=None, min_fresh=3):
+        """The filter's latest output; stable = its stable flag and `min_fresh` new image stamps
+        after `since`. (No fallback on the filter's own outputs: right after a move they still
+        agree on the old view; TrackedCubeTracker falls back on the per-frame detections.)"""
         if self.last is None:
             return None
         obs_t, centre, yaw, score, sxy, syaw = self.last
         fresh = [o for o in self.window.obs if since is None or o[0] >= since]
-        own = self.window.estimate(cube_id, now, since, window_s, min_count, max_spread_mm, max_yaw_spread_deg)
         filt_stable = score >= 0.5 and len(fresh) >= min_fresh and (since is None or obs_t >= since)
-        if not filt_stable and own is not None and own.stable:
-            return own                      # the filter still lags: fresh observations agree
         return CubeEstimate(cube_id=cube_id, centre=centre.copy(), yaw=yaw, stable=bool(filt_stable),
                             spread_mm=sxy, yaw_spread_deg=syaw, age_s=float(now - obs_t), count=len(fresh),
                             score=score)
@@ -153,6 +162,12 @@ class CubeTracker:
     def known(self) -> list:
         raise NotImplementedError
 
+    def fresh(self, cube_id, since, min_count=4, max_spread_mm=3.0, max_yaw_spread_deg=4.0) -> CubeEstimate | None:
+        """Estimate from per-frame observations taken after `since` ONLY (none older, whatever a
+        filter remembers), stable once `min_count` of them agree within `max_spread_mm` /
+        `max_yaw_spread_deg`; None if the cube was not seen since then."""
+        return self.get(cube_id, since)
+
     @staticmethod
     def now() -> float:
         return time.monotonic()
@@ -164,6 +179,7 @@ class DetectionsCubeTracker(CubeTracker):
     def __init__(self, node, topic="/cubes/detections", window_s=1.5, min_count=5, max_spread_mm=3.0,
                  max_yaw_spread_deg=4.0, callback_group=None):
         from vision_msgs.msg import Detection3DArray
+        self.node = node
         self.windows = {}
         self.window_s, self.min_count = window_s, min_count
         self.max_spread_mm, self.max_yaw_spread_deg = max_spread_mm, max_yaw_spread_deg
@@ -176,7 +192,12 @@ class DetectionsCubeTracker(CubeTracker):
             fold_quarter(math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z)))
 
     def on_detections(self, msg):
+        # time of the image (node's monotonic clock), not of the arrival: `since` = "after the arm stopped"
         t = self.now()
+        st = msg.header.stamp
+        if st.sec or st.nanosec:
+            ros_now = self.node.get_clock().now().nanoseconds * 1e-9
+            t -= min(1.0, max(0.0, ros_now - (st.sec + st.nanosec * 1e-9)))
         for d in msg.detections:
             if d.results:
                 cid, score = d.results[0].hypothesis.class_id, d.results[0].hypothesis.score
@@ -197,6 +218,14 @@ class DetectionsCubeTracker(CubeTracker):
         return w.estimate(key, self.now(), since, self.window_s, self.min_count, self.max_spread_mm,
                           self.max_yaw_spread_deg)
 
+    def fresh(self, cube_id, since, min_count=4, max_spread_mm=3.0, max_yaw_spread_deg=4.0):
+        key = cube_key(cube_id)
+        w = self.windows.get(key)
+        if w is None:
+            return None
+        return w.estimate(key, self.now(), since, math.inf, min_count, max_spread_mm, max_yaw_spread_deg,
+                          fresh_only=True)
+
     def known(self):
         return sorted(self.windows)
 
@@ -205,9 +234,10 @@ class TrackedCubeTracker(CubeTracker):
     """CubeTracker on /cubes/tracked (the detector's temporal filter)."""
 
     def __init__(self, node, topic="/cubes/tracked", min_fresh=3, window_s=1.5, min_count=5, max_spread_mm=3.0,
-                 max_yaw_spread_deg=4.0, callback_group=None):
+                 max_yaw_spread_deg=4.0, callback_group=None, detections=None):
         from vision_msgs.msg import Detection3DArray
         self.node = node
+        self.detections = detections    # DetectionsCubeTracker: per-frame observations (fresh(), lagging filter)
         self.states = {}
         self.min_fresh, self.window_s, self.min_count = min_fresh, window_s, min_count
         self.max_spread_mm, self.max_yaw_spread_deg = max_spread_mm, max_yaw_spread_deg
@@ -243,8 +273,19 @@ class TrackedCubeTracker(CubeTracker):
         st = self.states.get(key)
         if st is None:
             return None
-        return st.estimate(key, self.now(), since, self.min_fresh, self.window_s, self.min_count,
-                           self.max_spread_mm, self.max_yaw_spread_deg)
+        est = st.estimate(key, self.now(), since, self.min_fresh)
+        if not est.stable and since is not None and self.detections is not None:
+            # the filter still lags (old far-view observations in its window): fresh per-frame
+            # observations that agree among themselves count
+            own = self.detections.fresh(key, since, self.min_count, self.max_spread_mm, self.max_yaw_spread_deg)
+            if own is not None and own.stable:
+                return own
+        return est
+
+    def fresh(self, cube_id, since, min_count=4, max_spread_mm=3.0, max_yaw_spread_deg=4.0):
+        if self.detections is None:
+            return self.get(cube_id, since)
+        return self.detections.fresh(cube_id, since, min_count, max_spread_mm, max_yaw_spread_deg)
 
     def known(self):
         return sorted(self.states)
@@ -263,6 +304,9 @@ class AutoCubeTracker(CubeTracker):
 
     def known(self):
         return sorted(set(self.tracked.known()) | set(self.detections.known()))
+
+    def fresh(self, cube_id, since, min_count=4, max_spread_mm=3.0, max_yaw_spread_deg=4.0):
+        return self.detections.fresh(cube_id, since, min_count, max_spread_mm, max_yaw_spread_deg)
 
 
 class FrameTimes:
@@ -299,9 +343,8 @@ def make_cube_tracker(node, source="auto", detections_topic="/cubes/detections",
                       min_fresh=3, **kw) -> CubeTracker:
     if source == "detections":
         return DetectionsCubeTracker(node, detections_topic, **kw)
-    if source == "tracked":
-        return TrackedCubeTracker(node, tracked_topic, min_fresh, **kw)
-    if source == "auto":
-        return AutoCubeTracker(TrackedCubeTracker(node, tracked_topic, min_fresh, **kw),
-                               DetectionsCubeTracker(node, detections_topic, **kw))
+    if source in ("tracked", "auto"):
+        det = DetectionsCubeTracker(node, detections_topic, **kw)
+        tracked = TrackedCubeTracker(node, tracked_topic, min_fresh, detections=det, **kw)
+        return tracked if source == "tracked" else AutoCubeTracker(tracked, det)
     raise ValueError(f"unknown cube_source '{source}' (auto, tracked, detections)")

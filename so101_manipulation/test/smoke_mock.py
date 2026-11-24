@@ -22,6 +22,13 @@ It starts its own FAKE cube publisher and pick_place node per scenario (and stop
   cancel     cancel during the approach: the goal ends canceled, the arm stops
   overview   ~/overview (cube seen through the fisheye model, fov_check): JSON answer, ~/state, then a
              pick that skips the search (the cube is fresh and stable)
+  refine     the far view is 7 mm off (far_bias_mm), the close-up at the hover sees the cube where it is:
+             the refinement moves the grasp by ~7 mm (the detector's filter still holds the far view then)
+  clutter    two FAKE cubes 4.7 cm apart: cube_2 (yaw 20) and cube_4 along cube_2's first closing
+             direction: the pick closes across the line to cube_4, not along it; then a place right next
+             to cube_4 is refused (the cube would land on it)
+  clutter_refuse  cube_2 (yaw 0, one reachable closing direction) boxed in by cube_3/4/5 4.7 cm away:
+             refused in approach, naming the neighbour, before any move to the hover
   memory     a pick that had to sweep, the overview (cube out of view), a second pick: its search
              starts with the view aimed at where the cube was last seen, and is faster
 
@@ -142,8 +149,11 @@ class Driver(Node):
 
 
 def spawn(prefix, fake, node_params):
+    """fake: the FAKE cube's parameters, or a list of them (one publisher per cube)."""
     lib = os.path.join(prefix, "lib", "so101_manipulation")
-    procs = [start([os.path.join(lib, "fake_cube_publisher"), "--ros-args"] + sum((["-p", f"{k}:={v}"] for k, v in fake.items()), []))]
+    fakes = fake if isinstance(fake, list) else [fake]
+    procs = [start([os.path.join(lib, "fake_cube_publisher"), "--ros-args", "-r", f"__node:=fake_cube_{i}"]
+                   + sum((["-p", f"{k}:={v}"] for k, v in f.items()), [])) for i, f in enumerate(fakes)]
     cfg = os.path.join(prefix, "share", "so101_manipulation", "config", "pick_place.yaml")
     procs.append(start([os.path.join(lib, "pick_place"), "--ros-args", "-r", "__node:=cube_pick_place", "--params-file", cfg]
                        + sum((["-p", f"{k}:={v}"] for k, v in node_params.items()), [])))
@@ -237,7 +247,7 @@ def main():
         c = cubes["cube_2"]
         assert math.hypot(c["x_cm"] - 27.0, c["y_cm"] + 10.0) < 0.5 and c["stable"], c
         q = [math.degrees(d.js[n]) for n in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")]
-        assert abs(q[4] - (-72.4)) < 1.0, q
+        assert abs(q[4] - (-85.0)) < 1.0 and abs(q[0]) < 1.0, q
         s = d.settle_state()
         assert s["state"] == "idle" and s["holding"] is None, s
         # the cube is fresh and stable from the overview: the pick does not search
@@ -335,6 +345,48 @@ def main():
         assert moved < 0.01, f"arm still moving 0.5 s after cancel ({who} {math.degrees(moved):.1f} deg)"
         return True, f"{r.message} (coast {math.degrees(coast):.1f} deg)"
 
+    def refine():
+        # the far estimate from the overview (the jaw tip far above the table: biased by 7 mm), wherever
+        # the previous scenario left the arm
+        resp = d.call_overview()
+        assert resp.success, resp.message
+        st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2", hover_only=True))
+        assert st == S.STATUS_SUCCEEDED, f"status {st}: {r.message}"
+        shifts = [x for x in d.details if x.startswith("close-up")]
+        assert not any("keeping the far one" in x for x in d.details), d.details
+        assert 5.0 < r.refine_shift_mm < 9.5, f"refine shift {r.refine_shift_mm:.1f} mm (far bias 7 mm): {shifts}"
+        assert math.hypot(r.cube_position.x - 0.22, r.cube_position.y - 0.03) < 0.002, r.cube_position
+        return True, f"close-up corrected {r.refine_shift_mm:.1f} mm: {shifts}; {r.message.split('|')[-1].strip()}"
+
+    k4 = (0.22 + 0.047 * math.cos(math.radians(20)), 0.03 + 0.047 * math.sin(math.radians(20)))
+
+    def clutter():
+        st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2", hover_only=True))
+        assert st == S.STATUS_SUCCEEDED, f"status {st}: {r.message}"
+        appr = [x for x in d.details if "clutter:" in x]
+        assert appr and "cube_4" in appr[0], d.details
+        close = float(appr[0].split("jaws close along ")[1].split(" deg")[0])
+        # cube_4 lies along +20 deg from cube_2: the jaws must close across that line (+110 / -70)
+        along = abs(math.cos(math.radians(close - 20.0)))
+        assert along < 0.1, f"jaws close along {close:+.0f} deg, cube_4 along +20"
+        st2, r2, ph2 = d.call(d.pick, PickCube.Goal(cube_id="2"))
+        assert st2 == S.STATUS_SUCCEEDED, f"pick status {st2}: {r2.message}"
+        # put it down 2.5 cm from cube_4 (centre to centre): refused before moving
+        st3, r3, ph3 = d.call(d.place, PlaceCube.Goal(x=k4[0] + 0.025, y=k4[1], on_cube_id="", yaw_deg=float("nan")))
+        assert st3 == S.STATUS_ABORTED and r3.failed_phase == "carry" and "cube_4" in r3.message, r3.message
+        assert "descend" not in ph3, ph3
+        # and elsewhere it goes down
+        st4, r4, ph4 = d.call(d.place, PlaceCube.Goal(x=0.25, y=-0.08, on_cube_id="", yaw_deg=float("nan")))
+        assert st4 == S.STATUS_SUCCEEDED, r4.message
+        return True, f"pick: {appr[0]}; place next to cube_4 refused: {r3.message.split('|')[0].strip()}"
+
+    def clutter_refuse():
+        st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2"))
+        assert st == S.STATUS_ABORTED and r.failed_phase == "approach", f"status {st}: {r.message}"
+        assert "in the way" in r.message and any(c in r.message for c in ("cube_3", "cube_4", "cube_5")), r.message
+        assert "descend" not in ph and "refine" not in ph, ph
+        return True, r.message.split("|")[0].strip()
+
     base = {"x": 0.22, "y": 0.03, "yaw_deg": 20.0}
     # the fallback path: per-frame /cubes/detections only, the node's own median window
     scenario("miss", {**base, "publish_tracked": "false"}, {"cube_source": "detections"}, miss)
@@ -349,6 +401,11 @@ def main():
     scenario("cancel", base, {}, cancel)
     scenario("overview", {"x": 0.27, "y": -0.10, "yaw_deg": 10.0, "fov_check": "true"}, {}, overview)
     scenario("memory", {"x": 0.20, "y": 0.08, "yaw_deg": -30.0, "visible_cone_deg": 10.0}, {}, memory)
+    scenario("refine", {**base, "far_bias_mm": "[7.0, 0.0]"}, {}, refine)
+    scenario("clutter", [base, {"cube": 4, "x": k4[0], "y": k4[1], "yaw_deg": 20.0}], {"sim_contact_deg": 12.5}, clutter)
+    box = [{"cube": 2, "x": 0.22, "y": 0.0, "yaw_deg": 0.0}, {"cube": 4, "x": 0.267, "y": 0.0, "yaw_deg": 0.0},
+           {"cube": 5, "x": 0.22, "y": 0.047, "yaw_deg": 0.0}, {"cube": 3, "x": 0.22, "y": -0.047, "yaw_deg": 0.0}]
+    scenario("clutter_refuse", box, {}, clutter_refuse)
     d.destroy_node()
     rclpy.try_shutdown()
     print("\nsummary:")
