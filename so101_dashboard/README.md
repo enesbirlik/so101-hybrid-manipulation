@@ -64,7 +64,7 @@ Start the pick node next to the stack (`ros2 launch so101_manipulation pick_plac
 
 ### Cubes in the 3D view
 
-Each cube is a 30 mm box in its own colour (K0 orange, K1 sky blue, K2 green, K3 yellow, K4 vermilion, K5 purple: the Okabe-Ito colour-blind safe set), with a marker-like pattern on its top face and its id label. Its pose is smoothed (~150 ms to a new position or yaw, the shorter way round the 90° symmetry), so detector updates and moves by hand slide instead of jumping; a new cube fades in. The state decides the style:
+Each cube is a 30 mm box in the colour of its printed sheet (K0 pink, K1 blue, K2 green, K3 peach, K4 lilac, K5 magenta; the same values as the detector's markers), with a marker-like pattern on its top face and its id label. Its pose is smoothed (~150 ms to a new position or yaw, the shorter way round the 90° symmetry), so detector updates and moves by hand slide instead of jumping; a new cube fades in. The state decides the style:
 
 | State | When | Drawn |
 |---|---|---|

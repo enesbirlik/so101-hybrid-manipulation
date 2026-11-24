@@ -41,12 +41,14 @@ constexpr float GRASP_TIP_HEIGHT = 0.011f;   // fixed jaw tip above the cube's b
 constexpr float HOLD_GRIPPER_RAD = 12.5f * DEG2RAD;   // jaws closed on a 30 mm cube
 const char * MOVING_JAW_LINK = "moving_jaw_so101_v1_link";
 
-// Colour-blind friendly cube colours by id (Okabe-Ito, without the black and the dark blue that
-// vanish on the dark background).
+// Cube colours by id: the colours of the printed cube sheet (K0 pink, K1 blue, K2 green, K3 peach,
+// K4 lilac, K5 magenta), a little more saturated to read on the dark background. Same values as
+// CUBE_COLOURS in so101_perception/scripts/cube_detector_node.py, so the 3D view, the detector's
+// markers and the real cubes match.
 Color cube_color(int k)
 {
-  static const Color palette[] = {{230, 159, 0, 255}, {86, 180, 233, 255}, {0, 158, 115, 255},
-    {240, 228, 66, 255}, {213, 94, 0, 255}, {204, 121, 167, 255}};
+  static const Color palette[] = {{245, 140, 140, 255}, {115, 179, 242, 255}, {128, 217, 128, 255},
+    {250, 191, 102, 255}, {179, 140, 242, 255}, {242, 128, 204, 255}};
   return k < 0 ? Color{190, 200, 204, 255} : palette[k % 6];
 }
 
