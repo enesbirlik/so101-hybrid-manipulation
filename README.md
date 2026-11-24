@@ -125,6 +125,7 @@ ros2 launch so101_description display.launch.py
 - [Day 6 — Shoulder zero, ruler and the pan shake](docs/devlog/2026-11-14-day-6.md) (2026-11-14)
 - [Day 7 — Gains, a gripper that could not close, and a first grasp attempt](docs/devlog/2026-11-21-day-7.md) (2026-11-21)
 - [Day 8 — Paper cubes: one crushed, then picked, placed and stacked three high](docs/devlog/2026-11-22-day-8.md) (2026-11-22)
+- [Day 9 — A steadier close-up, neighbours as obstacles, and a shake that the encoders could not see](docs/devlog/2026-11-24-day-9.md) (2026-11-23, 2026-11-24)
 
 New entries follow [`docs/devlog/template.md`](docs/devlog/template.md). Videos are linked from the entries, not stored in the repo.
 
