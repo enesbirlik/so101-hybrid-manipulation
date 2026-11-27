@@ -72,6 +72,10 @@ def test_tracker_ids_and_sizes():
     # a new box far away gets a new id
     out = tr.update(9.0, [mk(0.35, -0.1, 0.03)])
     assert out[0][0] == 12
+    # all forgotten (out of sight longer than the memory), then seen again in place: same ids back
+    assert sorted(tr.forget(30.0, 100.0)) == [10, 11, 12]
+    out = tr.update(200.0, [mk(0.2 + 0.004, 0.0, 0.030), mk(0.25, 0.05, 0.045), mk(0.10, 0.10, 0.03)])
+    assert [k for k, _ in out] == [10, 11, 13]
 
 
 @pytest.mark.skipif(not os.path.exists(REAL_FRAME), reason="no real wrist frame")

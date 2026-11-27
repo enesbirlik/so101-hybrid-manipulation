@@ -442,6 +442,12 @@ class WoodTracker:
         self.next_id = first_id
         self.tracks = {}      # id -> CubeTrack
         self.sizes = {}       # id -> deque of (a, b, h)
+        # forgotten tracks: id -> (last centre, time). A box that turns up where a forgotten one was
+        # gets its id back: the pick node keeps asking for the id it was given, and the arm's view
+        # poses easily keep a cube out of sight longer than the track memory (real arm 2026-11-27:
+        # ids ran up to cube_69 for 8 cubes, and a pick searched 158 s for cube_62 sitting in place).
+        self.retired = {}
+        self.retired_s = 3600.0
 
     def update(self, stamp, boxes):
         """-> list of (id, box) for this frame."""
@@ -464,8 +470,11 @@ class WoodTracker:
         for i, box in enumerate(boxes):
             k = assigned.get(i)
             if k is None:
+                k = self._revive(box.centre, stamp)
+            if k is None:
                 k = self.next_id
                 self.next_id += 1
+            if k not in self.tracks:
                 self.tracks[k] = CubeTrack(self.p)
                 self.sizes[k] = deque(maxlen=self.p.window)
             tr = self.tracks[k]
@@ -481,9 +490,21 @@ class WoodTracker:
     def size(self, k):
         return np.median(np.array(self.sizes[k]), axis=0)
 
+    def _revive(self, centre, now):
+        best, best_d = None, self.assoc
+        for k, (c, t) in self.retired.items():
+            d = float(np.linalg.norm(c[:2] - centre[:2]))
+            if d <= best_d and now - t <= self.retired_s:
+                best, best_d = k, d
+        if best is not None:
+            del self.retired[best]
+        return best
+
     def forget(self, older_than, now):
         gone = [k for k, t in self.tracks.items() if t.age(now) > older_than]
         for k in gone:
+            if self.tracks[k].centre is not None:
+                self.retired[k] = (np.array(self.tracks[k].centre, float), now)
             del self.tracks[k]
             del self.sizes[k]
         return gone
