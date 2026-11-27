@@ -6,7 +6,7 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
@@ -25,9 +25,20 @@ def generate_launch_description():
         DeclareLaunchArgument("fake_y", default_value="0.03"),
         DeclareLaunchArgument("fake_yaw_deg", default_value="20.0"),
         DeclareLaunchArgument("fake_visible_cone_deg", default_value="0.0"),
+        DeclareLaunchArgument("wood", default_value="false",
+                              description="wooden cubes (camera side cubes:=wood): adds config/pick_place_wood.yaml "
+                                          "(longer waits for the slower marker-less detector)"),
         Node(
             package="so101_manipulation", executable="pick_place", name="cube_pick_place", output="screen",
+            condition=UnlessCondition(arg("wood")),
             parameters=[arg("params_file"),
+                        {"sim_contact_deg": ParameterValue(arg("sim_contact_deg"), value_type=float)}],
+        ),
+        Node(
+            package="so101_manipulation", executable="pick_place", name="cube_pick_place", output="screen",
+            condition=IfCondition(arg("wood")),
+            parameters=[arg("params_file"),
+                        PathJoinSubstitution([FindPackageShare("so101_manipulation"), "config", "pick_place_wood.yaml"]),
                         {"sim_contact_deg": ParameterValue(arg("sim_contact_deg"), value_type=float)}],
         ),
         Node(

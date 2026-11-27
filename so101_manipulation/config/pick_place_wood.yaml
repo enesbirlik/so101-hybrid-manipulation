@@ -1,0 +1,18 @@
+# Overrides of pick_place.yaml for the marker-less WOODEN cube detector (`wood:=true` in
+# pick_place.launch.py, with `cubes:=wood` on the camera side). That detector fits every blob
+# (~2-4 s for the first frame at a new pose, ~0.1 s for the next ones while the arm stands still:
+# fits are reused), against ~15 fps for ArUco, so every wait for frames is longer and asks for fewer.
+cube_pick_place:
+  ros__parameters:
+    overview_wait_s: 15.0
+    overview_min_frames: 3
+    search_initial_wait_s: 5.0
+    search_view_wait_s: 8.0
+    search_empty_frames: 3
+    search_fresh_s: 8.0
+    obs_window_s: 10.0
+    obs_min_count: 3
+    obs_min_fresh: 2
+    refine_timeout_s: 8.0
+    refine_extra_s: 4.0
+    refine_min_obs: 3

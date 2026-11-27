@@ -59,6 +59,7 @@ class WoodParams:
     orange_s_min: int = 185            # jaw orange (S ~230) is grown by orange_grow and cut out of the mask; 0 = off
     orange_grow: float = 0.02          # of the image width
     min_footprint: float = 0.016       # m: blobs whose mid-height footprint is smaller on both sides are not fitted
+    max_aspect: float = 1.5            # longer / shorter horizontal edge above this = merged cubes, rejected
     cache_iou: float = 0.97            # detect_boxes(cache=...): reuse the previous fit of a blob this alike
     workers: int = 10                  # processes fitting blobs in parallel (<= 1: in this process)
     start_nfev: int = 25                # max evaluations of each yaw start before the best is refined
@@ -339,7 +340,9 @@ def fit_box(mask, R_wc, t_wc, K, D, table_z, prm=WoodParams(), gray=None):
 def accepted(box, prm=WoodParams()):
     lo, hi = prm.size_range
     at_bound = np.any(box.size < lo * 1.02) or np.any(box.size > hi * 0.98)
-    return box.iou >= prm.min_iou and box.rms_px <= prm.max_rms_px and not at_bound
+    a, b = box.size[:2]
+    merged = max(a, b) / max(min(a, b), 1e-6) > prm.max_aspect   # two touching cubes fitted as one long box
+    return box.iou >= prm.min_iou and box.rms_px <= prm.max_rms_px and not at_bound and not merged
 
 
 def detect_boxes(bgr, R_wc, t_wc, K, D, table_z, prm=WoodParams(), rays_cam=None, roi=None, keep_rejected=False,
