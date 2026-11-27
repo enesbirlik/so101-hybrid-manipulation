@@ -124,6 +124,39 @@ The per-frame median is set by the printing errors (a marker 2 mm off-centre mov
 - For small or far cubes, run the camera at `scale:=1.0`: at 640×360 a marker 30 cm away is only ~27 px wide.
 - Cost: ~2.5 ms for the markers and ~4 ms per cube for the fit on this machine, so ~25 ms for six cubes in view.
 
+## Wooden cubes (marker-less)
+
+```bash
+ros2 launch so101_perception wrist_camera.launch.py cubes:=wood
+ros2 launch so101_moveit_config demo.launch.py camera:=true cubes:=wood
+```
+
+`cubes:=true` (or `aruco`) runs the ArUco detector, `cubes:=wood` runs `scripts/wood_cube_detector_node.py` instead, never both. It finds plain light wooden boxes (any size from ~15 to 70 mm, not necessarily exact cubes) on the white table and **measures** them. It publishes the same topics and messages as the ArUco detector (`/cubes/detections`, `/cubes/tracked`, `/cubes/markers`, `/wrist_camera/cubes/compressed`, TF `base_link` → `cube_<k>`), so the pick/place node and the dashboard need no change. The differences:
+
+| Field | Wooden cubes |
+|---|---|
+| `id`, `class_id` | `cube_<k>`, k = 10, 11, … A detection joins the nearest track within `assoc_mm` (20 mm); otherwise it gets a new id. A moved cube therefore gets a new id; the old one fades after `memory_s` |
+| `bbox.size` | measured: x = edge along the yaw axis, y = the other horizontal edge, z = height; in `/cubes/tracked` the median over the track window |
+| `pose` | centre at bottom + height/2 (bottom = `table_z`), yaw folded into [−45°, 45°) |
+| `score` | detections: the fit quality of this frame; tracked: ≥ 0.5 exactly when the track is stable (same `cube_tracking.CubeTrack` as the ArUco cubes) |
+
+How (`scripts/wood_detection.py`, no ROS):
+
+1. Wood pixels by HSV (beige hue, medium saturation; dark pixels must be more saturated, which drops the grey shadows). The table is barely saturated, the orange jaws and the brown desk are too saturated. Only pixels whose ray meets the table inside the work area (`work_x`, `work_y`) count.
+2. Connected blobs; touching ones are split by a watershed on the distance transform.
+3. Per blob, an upright box (x, y, yaw, a, b, h) standing on the table is fitted (scipy least squares, soft-L1): its silhouette, the convex hull of its edges projected through the fisheye model, must match the blob outline both ways, and its top face outline must lie on image edges (Canny). A weak prior pulls towards a cube. Four yaw starts.
+4. Rejected: IoU of silhouette and blob < `min_iou` (0.8), outline RMS > `max_rms_px` (3 px), or a size at the bounds.
+
+Synthetic test (`test/test_wood_detection.py`, ray-traced boxes of 25, 35, 45 mm and 40×35×38 mm with shadows, camera 25 cm above the table at 640×360): centre within 1.7 mm, edges within 3 mm (height is the weakest: 0.3–3 mm, mostly underestimated). On a real frame (`test/data/wood_wrist.jpg`) the segmentation finds 7 blobs on the table and nothing on the jaws.
+
+Known limits:
+
+- ~1.5–2 s per frame for 4 cubes (one CPU core); the node takes only the newest frame.
+- Cubes that overlap in the image (one behind another) are merged or split badly; their fits usually fail the IoU check and are dropped. Look from above for clean results.
+- A cube on top of another is fitted as one tall box on the table.
+- Seen straight from above, height and footprint trade off; only the cube prior separates them.
+- The HSV thresholds and `outline_px` (how far the thresholded outline lies inside the true edge) are tuned on one real frame and on synthetic images; check them under your light.
+
 ## Planned
 
 - **Phase 5:** object detection beyond markers; outputs consumed by the Behavior Tree.

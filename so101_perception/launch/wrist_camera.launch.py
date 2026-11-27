@@ -1,4 +1,5 @@
-"""Wrist camera image + the hand-eye transform gripper_link -> wrist_camera_optical_frame (+ the cube detector with cubes:=true)."""
+"""Wrist camera image + the hand-eye transform gripper_link -> wrist_camera_optical_frame
+(+ a cube detector: cubes:=true / aruco for the ArUco cubes, cubes:=wood for plain wooden cubes)."""
 
 import os
 
@@ -7,7 +8,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import EqualsSubstitution, LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -23,7 +24,8 @@ def generate_launch_description():
         DeclareLaunchArgument("fps", default_value="15.0",
                               description="publish rate; the camera delivers 30 fps in good light, ~25 in dim light"),
         DeclareLaunchArgument("cubes", default_value="false",
-                              description="also run the ArUco cube detector (cubes/detections, cubes/tracked, wrist_camera/cubes/compressed)"),
+                              description="cube detector: false, true/aruco (ArUco cubes) or wood (plain wooden cubes, marker-less); "
+                                          "both publish cubes/detections, cubes/tracked, wrist_camera/cubes/compressed"),
         Node(
             package="so101_perception",
             executable="wrist_camera_node.py",
@@ -36,7 +38,13 @@ def generate_launch_description():
         Node(
             package="so101_perception",
             executable="cube_detector_node.py",
-            condition=IfCondition(LaunchConfiguration("cubes")),
+            condition=IfCondition(PythonExpression(
+                ["'", LaunchConfiguration("cubes"), "'.lower() in ('true', '1', 'aruco')"])),
+        ),
+        Node(
+            package="so101_perception",
+            executable="wood_cube_detector_node.py",
+            condition=IfCondition(EqualsSubstitution(LaunchConfiguration("cubes"), "wood")),
         ),
         Node(
             package="tf2_ros",
