@@ -177,9 +177,9 @@ PARAMS = {
     "wood_auto_id_min": (10, "cube ids >= this always use the wood profile (wood detector ids); <= 0 = off"),
     "wood_gripper_torque_limit": (450.0, "wood: gripper torque limit during the grasp, 0.1 % units (45 %)"),
     "wood_squeeze_deg": (4.0, "wood: hold target = contact angle - this (never below the floor)"),
-    "wood_squeeze_mm": (4.0, "wood: floor = angle of (width - this); capped at 6 mm (soft_grasp.MAX_SQUEEZE_MM)"),
+    "wood_squeeze_mm": (4.0, "wood: floor = angle of (width - this - wood_size_uncertainty_mm); together capped at 10 mm (soft_grasp.MAX_SQUEEZE_MM)"),
     "wood_close_speed_deg_s": (8.0, "wood: closing speed inside the contact window"),
-    "wood_size_uncertainty_mm": (3.0, "wood: vision size error, widens the contact window"),
+    "wood_size_uncertainty_mm": (6.0, "wood: vision size error (overview pose, synthetic: up to 5.8 mm), widens the contact window and lowers the floor"),
     "sim_contact_deg": (NAN, "MOCK ONLY: pretend a cube blocks the jaws at this angle (NaN = off); "
                              "refused unless robot_description uses mock_components"),
     "gripper_torque_limit": (200.0, "gripper torque limit during the grasp, 0.1 % units (200 = 20 %, holds a "

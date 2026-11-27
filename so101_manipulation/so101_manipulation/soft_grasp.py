@@ -231,7 +231,12 @@ def ramp_trajectory(start_deg: float, pts, p: SoftGraspParams, step_deg: float =
 # approach opening, which only needs to be wide enough. Contact angles and the floor of cubes up to
 # ~50 mm lie at <= 28 deg, inside the measured range.
 
-MAX_SQUEEZE_MM = 6.0     # the floor never sits more than this below the object width, whatever the profile says
+MAX_SQUEEZE_MM = 10.0    # the floor never sits more than this below the vision width, whatever the profile says
+# The floor sits squeeze_mm + size_uncertainty_mm below the VISION width: a width read too wide (the
+# wood detector seen from the overview pose: up to ~6 mm, synthetic 2026-11-27) must not end the
+# closing ramp before the jaws reach the cube. The hold itself is relative to the MEASURED contact
+# (contact - squeeze_deg), so a rigid cube is squeezed the same however wrong the vision width is.
+# Paper keeps uncertainty 0: its floor stays at width - 1.5 mm (crushed-cube rule).
 
 
 @dataclass
@@ -266,7 +271,7 @@ def params_for_width(base: SoftGraspParams, width_mm: float, profile: GripProfil
     pr = profile or GripProfile(squeeze_deg=base.squeeze_deg, squeeze_mm=base.squeeze_mm,
                                 closing_speed_deg_s=base.closing_speed_deg_s)
     return replace(base, edge_mm=float(width_mm), squeeze_deg=pr.squeeze_deg,
-                   squeeze_mm=min(max(0.0, pr.squeeze_mm), MAX_SQUEEZE_MM),
+                   squeeze_mm=min(max(0.0, pr.squeeze_mm) + max(0.0, pr.size_uncertainty_mm), MAX_SQUEEZE_MM),
                    closing_speed_deg_s=pr.closing_speed_deg_s,
                    window_deg=base.window_deg + max(0.0, pr.size_uncertainty_mm) / base.gap_per_deg_mm)
 

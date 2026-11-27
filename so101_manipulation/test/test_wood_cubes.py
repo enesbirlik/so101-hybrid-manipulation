@@ -25,8 +25,8 @@ WOOD = sg.GripProfile("wood", 450.0, 4.0, 4.0, 8.0, 3.0)
 def test_floor_never_below_width_minus_squeeze(width, prof):
     P = sg.params_for_width(BASE, width, prof)
     floor = sg.floor_deg(P)
-    # the floor's gap is exactly width - squeeze_mm, never narrower
-    assert sg.gap_mm(floor, P) == pytest.approx(width - prof.squeeze_mm)
+    # the floor's gap is exactly width - squeeze_mm - size uncertainty, never narrower than the cap
+    assert sg.gap_mm(floor, P) == pytest.approx(width - min(prof.squeeze_mm + prof.size_uncertainty_mm, sg.MAX_SQUEEZE_MM))
     assert sg.gap_mm(floor, P) >= width - sg.MAX_SQUEEZE_MM - 1e-9
     expected = sg.expected_contact_deg(width, P.gap_zero_mm, P.gap_per_deg_mm)
     assert floor < expected
@@ -49,10 +49,10 @@ def test_paper_30mm_unchanged():
 
 def test_wood_profile():
     P = sg.params_for_width(BASE, 30.0, WOOD)
-    assert P.squeeze_deg == 4.0 and P.squeeze_mm == 4.0 and P.closing_speed_deg_s == 8.0
+    assert P.squeeze_deg == 4.0 and P.squeeze_mm == 7.0 and P.closing_speed_deg_s == 8.0
     assert P.window_deg == pytest.approx(BASE.window_deg + 3.0 / 1.35)
-    # floor: 26 mm gap -> 9.6 deg
-    assert sg.floor_deg(P) == pytest.approx((26.0 - 13.0) / 1.35)
+    # floor: 30 - 4 - 3 = 23 mm gap -> 7.4 deg (a width read 3 mm too wide still lets the jaws reach the cube)
+    assert sg.floor_deg(P) == pytest.approx((23.0 - 13.0) / 1.35)
     # a profile asking for a huge squeeze is capped
     P2 = sg.params_for_width(BASE, 30.0, sg.GripProfile("wood", 450, 4, 20, 8, 3))
     assert sg.gap_mm(sg.floor_deg(P2), P2) == pytest.approx(30.0 - sg.MAX_SQUEEZE_MM)
