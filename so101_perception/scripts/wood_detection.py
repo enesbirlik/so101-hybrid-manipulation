@@ -41,7 +41,7 @@ class WoodParams:
     s_max: int = 172         # desk ~195, orange jaws ~230
     v_min: int = 45
     dark_v: int = 125         # below this brightness a pixel must be more saturated to count as wood:
-    dark_s_min: int = 118     # shadows are S 80..100 at V 80..90, dark wood sides S 140..150
+    dark_s_min: int = 90      # dark pixels (V < dark_v) need this S: table shadows S 47..66 (some 80..97), wood in the arm's shadow S 100..114, dark wood sides 140..150
     open_px: float = 0.004   # morphology kernel as a fraction of the image width
     min_area: float = 2.5e-4  # blob area as a fraction of the image area
     split_frac: float = 0.55  # watershed seeds: distance transform above this fraction of the blob's max
@@ -56,6 +56,11 @@ class WoodParams:
     top_pts: int = 60         # samples on the top face outline, matched to image edges
     top_weight: float = 2.0
     canny: tuple = (25, 70)
+    orange_s_min: int = 185            # jaw orange (S ~230) is grown by orange_grow and cut out of the mask; 0 = off
+    orange_grow: float = 0.02          # of the image width
+    min_footprint: float = 0.016       # m: blobs whose mid-height footprint is smaller on both sides are not fitted
+    cache_iou: float = 0.97            # detect_boxes(cache=...): reuse the previous fit of a blob this alike
+    workers: int = 10                  # processes fitting blobs in parallel (<= 1: in this process)
     start_nfev: int = 25                # max evaluations of each yaw start before the best is refined
     yaw_starts: int = 4
     outline_px: float = 1.2   # the blob outline is moved out by this: 0.5 px (pixel centres) + ~0.7 px the
@@ -121,6 +126,12 @@ def wood_mask(bgr, prm=WoodParams(), roi=None):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     m = cv2.inRange(hsv, (prm.h_min, prm.s_min, prm.v_min), (prm.h_max, prm.s_max, 255))
     m[(hsv[..., 2] < prm.dark_v) & (hsv[..., 1] < prm.dark_s_min)] = 0
+    if prm.orange_s_min > 0:
+        # the orange jaws: their blurred edges fall into the wood range (real arm 2026-11-27, LOOK pose)
+        orange = cv2.inRange(hsv, (0, prm.orange_s_min, 60), (prm.h_max, 255, 255))
+        orange = cv2.morphologyEx(orange, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        k = max(3, int(round(prm.orange_grow * bgr.shape[1])) | 1)
+        m[cv2.dilate(orange, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))) > 0] = 0
     if roi is not None:
         m[~roi] = 0
     k = max(3, int(round(prm.open_px * bgr.shape[1])) | 1)
@@ -265,6 +276,8 @@ def initial_box(contour, cam, z0, prm, h0=0.03):
         return None
     (cx, cy), (a, b), ang = cv2.minAreaRect((w[:, :2] * 1000).astype(np.float32))
     lo, hi = prm.size_range
+    if max(a, b) / 1000 < prm.min_footprint:
+        return None          # a speck (shadow edge, jaw rim): not worth a fit
     a, b = np.clip(np.array([a, b]) / 1000 * 0.85, lo * 1.05, hi * 0.95)
     h = float(np.clip(np.sqrt(a * b), lo * 1.05, hi * 0.95))
     return np.array([cx / 1000, cy / 1000, np.radians(ang), a, b, h])
@@ -329,10 +342,14 @@ def accepted(box, prm=WoodParams()):
     return box.iou >= prm.min_iou and box.rms_px <= prm.max_rms_px and not at_bound
 
 
-def detect_boxes(bgr, R_wc, t_wc, K, D, table_z, prm=WoodParams(), rays_cam=None, roi=None, keep_rejected=False):
+def detect_boxes(bgr, R_wc, t_wc, K, D, table_z, prm=WoodParams(), rays_cam=None, roi=None, keep_rejected=False,
+                 cache=None):
     """Image + camera pose -> (accepted WoodBoxes, rejected WoodBoxes, mask).
 
     rays_cam: pixel_rays() of this image size (cached by the caller) to restrict to the work area.
+    cache: a dict the caller keeps between frames: a blob whose mask matches one of the previous
+    frame (IoU >= prm.cache_iou) seen from the same camera pose (within 1 mm / 0.2 deg) reuses that
+    frame's fit instead of fitting again (the arm stands still at a view pose: frames are alike).
     """
     area = roi
     if rays_cam is not None:
@@ -341,15 +358,71 @@ def detect_boxes(bgr, R_wc, t_wc, K, D, table_z, prm=WoodParams(), rays_cam=None
     mask = wood_mask(bgr, prm, area)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     good, bad = [], []
-    for blob in split_blobs(mask, bgr, prm):
-        try:
-            box = fit_box(blob, R_wc, t_wc, K, D, table_z, prm, gray)
-        except (cv2.error, np.linalg.LinAlgError, ValueError):
-            box = None
+    blobs = split_blobs(mask, bgr, prm)
+    boxes = [None] * len(blobs)
+    todo = list(range(len(blobs)))
+    same_pose = False
+    if cache is not None and "pose" in cache:
+        R0, t0 = cache["pose"]
+        dang = np.degrees(np.arccos(np.clip((np.trace(R0.T @ R_wc) - 1) / 2, -1, 1)))
+        same_pose = np.linalg.norm(t0 - t_wc) < 1e-3 and dang < 0.2
+    if same_pose:
+        todo = []
+        for i, b in enumerate(blobs):
+            hit = _cached(cache["blobs"], b, prm.cache_iou)
+            if hit is not None:
+                boxes[i] = hit
+            else:
+                todo.append(i)
+    ex = _executor(prm.workers) if len(todo) > 1 else None
+    args = [(blobs[i], R_wc, t_wc, K, D, table_z, prm, gray) for i in todo]
+    try:
+        fitted = list(ex.map(_fit_safe, args)) if ex is not None else [_fit_safe(a) for a in args]
+    except Exception:   # broken pool (a worker died): drop it, fit here; the next frame forks a new one
+        _EXECUTOR.pop(prm.workers, None)
+        fitted = [_fit_safe(a) for a in args]
+    for i, box in zip(todo, fitted):
+        boxes[i] = box
+    if cache is not None:
+        cache["pose"] = (R_wc.copy(), np.asarray(t_wc, float).copy())
+        cache["blobs"] = [(b, box) for b, box in zip(blobs, boxes)]
+    for box in boxes:
         if box is None:
             continue
         (good if accepted(box, prm) else bad).append(box)
     return good, bad, mask
+
+
+def _cached(entries, blob, min_iou):
+    for b, box in entries:
+        inter = np.count_nonzero(b & blob) if b.dtype == bool else np.count_nonzero((b > 0) & (blob > 0))
+        union = np.count_nonzero((b > 0) | (blob > 0))
+        if union and inter / union >= min_iou:
+            return box
+    return None
+
+
+def _fit_safe(args):
+    try:
+        return fit_box(*args)
+    except (cv2.error, np.linalg.LinAlgError, ValueError):
+        return None
+
+
+_EXECUTOR = {}
+
+
+def _executor(workers):
+    """One process pool per worker count (spawned once, reused every frame); None for workers <= 1.
+    The box fits are independent and pure Python/numpy bound: 17 blobs took 15 s on one core
+    (real LOOK frame 2026-11-27)."""
+    if workers <= 1:
+        return None
+    if workers not in _EXECUTOR:
+        import multiprocessing as mp
+        from concurrent.futures import ProcessPoolExecutor
+        _EXECUTOR[workers] = ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn"))   # not fork: the ROS node is multi-threaded
+    return _EXECUTOR[workers]
 
 
 # -- tracking -------------------------------------------------------------------------------

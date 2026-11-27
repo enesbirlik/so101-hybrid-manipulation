@@ -88,6 +88,7 @@ class WoodCubeDetector(Node):
         self.D = np.array(c["distortion_coefficients"]["data"]).reshape(4, 1)
         self.calib_width = c["image_width"]
         self.K, self.K_width, self.rays = None, None, None
+        self.fit_cache = {}      # wood_detection.detect_boxes: fits reused while the camera stands still
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -160,7 +161,7 @@ class WoodCubeDetector(Node):
             R_wc, t_wc = pose
             try:
                 good, bad, mask = wd.detect_boxes(img, R_wc, t_wc, self.K, self.D, self.table_z, self.prm,
-                                                  rays_cam=self.rays)
+                                                  rays_cam=self.rays, cache=self.fit_cache)
             except Exception as e:  # one bad frame must not take the detector down
                 self.get_logger().warn(f"wood fit failed on this frame: {type(e).__name__}: {e}",
                                        throttle_duration_sec=5.0)
