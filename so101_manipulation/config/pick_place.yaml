@@ -102,6 +102,7 @@ cube_pick_place:
     width_mismatch_mm: 6.0  # warn when the width measured at the contact differs from the vision width by more
     # grip profiles
     grip_profile: "paper"  # 'paper' (soft: gripper_torque_limit, squeeze_*, close_speed_deg_s) or 'wood' (rigid: the wood_* values)
+    wood_hold_freeze_mm: 15.0  # wood: while a cube is held, no new cubes enter the memory and known ones move at most this (the held cube shows up as phantom boxes on the table)
     wood_auto_id_min: 10  # cube ids >= this always use the wood profile (wood detector ids); <= 0 = off
     wood_gripper_torque_limit: 450.0  # wood: gripper torque limit during the grasp, 0.1 % units (45 %)
     wood_squeeze_deg: 4.0  # wood: hold target = contact angle - this (never below the floor)

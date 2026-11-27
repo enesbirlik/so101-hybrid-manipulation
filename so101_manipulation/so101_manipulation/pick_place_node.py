@@ -174,6 +174,8 @@ PARAMS = {
     # grip profiles
     "grip_profile": ("paper", "'paper' (soft: gripper_torque_limit, squeeze_*, close_speed_deg_s) or 'wood' "
                               "(rigid: the wood_* values)"),
+    "wood_hold_freeze_mm": (15.0, "wood: while a cube is held, no new cubes enter the memory and known ones move at most this "
+                                  "(the held cube shows up as phantom boxes on the table)"),
     "wood_auto_id_min": (10, "cube ids >= this always use the wood profile (wood detector ids); <= 0 = off"),
     "wood_gripper_torque_limit": (450.0, "wood: gripper torque limit during the grasp, 0.1 % units (45 %)"),
     "wood_squeeze_deg": (4.0, "wood: hold target = contact angle - this (never below the floor)"),
@@ -361,9 +363,19 @@ class PickPlaceNode(Node):
                 continue
             if tip is not None and np.linalg.norm(np.asarray(est.centre, float) - tip) < 0.04:
                 continue
+            wood = self.profile_for(k).name == "wood"
+            if wood and not est.stable:
+                continue        # marker-less: one-off blobs (shadows, half-seen cubes) are not cubes yet
             t_obs = time.monotonic() - est.age_s
             with self.memory_lock:
                 m = self.memory.get(k)
+                if wood and self.holding is not None:
+                    # the held cube is in the camera's view and, projected onto the table, shows up as
+                    # boxes far from the jaw tip (real arm 2026-11-27: 6 phantom cubes during a stack,
+                    # one refused the place). While holding: no new cubes, known ones must not move.
+                    if m is None or m["centre"] is None or \
+                            np.linalg.norm(np.asarray(est.centre, float)[:2] - m["centre"][:2]) > self.p.wood_hold_freeze_mm / 1000:
+                        continue
                 if m is None or t_obs > m["t"] + 1e-3:
                     self.memory[k] = {"centre": np.array(est.centre, float), "yaw": float(est.yaw), "t": t_obs,
                                       "size": self.size_of(est)}

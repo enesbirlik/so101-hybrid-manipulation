@@ -61,7 +61,7 @@ class WoodParams:
     min_footprint: float = 0.016       # m: blobs whose mid-height footprint is smaller on both sides are not fitted
     max_aspect: float = 1.5            # longer / shorter horizontal edge above this = merged cubes, rejected
     cache_iou: float = 0.97            # detect_boxes(cache=...): reuse the previous fit of a blob this alike
-    workers: int = 10                  # processes fitting blobs in parallel (<= 1: in this process)
+    workers: int = 4                   # processes fitting blobs in parallel (<= 1: in this process); 10 kept the load at 17-20 on 12 cores (2026-11-27) next to ros2_control
     start_nfev: int = 25                # max evaluations of each yaw start before the best is refined
     yaw_starts: int = 4
     outline_px: float = 1.2   # the blob outline is moved out by this: 0.5 px (pixel centres) + ~0.7 px the
