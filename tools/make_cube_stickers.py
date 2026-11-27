@@ -55,7 +55,8 @@ def main():
     ap.add_argument("--first-id", type=int, default=50)
     ap.add_argument("--marker-mm", type=float, default=20.0)
     ap.add_argument("--quiet-mm", type=float, default=3.0)
-    ap.add_argument("--gap-mm", type=float, default=3.0)
+    ap.add_argument("--gap-mm", type=float, default=0.0,
+                    help="space between stickers; 0 = butted grid with straight cut lines through every row and column")
     ap.add_argument("-o", "--out", default=os.path.expanduser("~/so101_data/stickers/kup_etiketleri.pdf"))
     a = ap.parse_args()
     dic = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
@@ -87,15 +88,28 @@ def main():
             img = marker(dic, mid, px(a.marker_mm))
             for j in range(6):
                 x = margin_x + label_w + j * pitch
-                dashed_rect(d, px(x), px(y), px(x + sticker), px(y + sticker), px(1.0), px(0.15))
+                if a.gap_mm > 0:
+                    dashed_rect(d, px(x), px(y), px(x + sticker), px(y + sticker), px(1.0), px(0.15))
                 page.paste(img, (px(x + a.quiet_mm), px(y + a.quiet_mm)))
                 # tiny id under the marker, inside the quiet zone, far from the black square
                 d.text((px(x + a.quiet_mm), px(y + a.quiet_mm + a.marker_mm + 0.4)), f"{mid}", fill=150, font=font(px(1.6)))
         d.text((px(margin_x), px(297 - 14)),
-               "Her kupun 6 yuzune ayni satirdaki 6 etiket. Kesik cizgiden kesin, siyah kareyi kesmeyin.",
+               "Once uzun yatay cizgileri, sonra dikeyleri cetvelle kesin. Her satir = bir kupun 6 yuzu.",
                fill=0, font=f_small)
         d.text((px(margin_x), px(297 - 10)),
                "Ortalamak yeterli: 1-2 mm kayma ve birkac derece aci sorun degil.", fill=0, font=f_small)
+        if a.gap_mm <= 0:
+            # butted grid: one straight line per row / column boundary, run 6 mm past the grid so a
+            # ruler can line up with it; cut the long lines first, then the short ones
+            n_rows = min(a.cubes, start + rows_per_page) - start
+            x0, x1 = margin_x + label_w, margin_x + label_w + 6 * sticker
+            y0, y1 = margin_y + head, margin_y + head + n_rows * sticker
+            for r in range(n_rows + 1):
+                yy = px(y0 + r * sticker)
+                d.line([(px(x0 - 6), yy), (px(x1 + 6), yy)], fill=120, width=px(0.12))
+            for j in range(7):
+                xx = px(x0 + j * sticker)
+                d.line([(xx, px(y0 - 6)), (xx, px(y1 + 6))], fill=120, width=px(0.12))
         pages.append(page.convert("RGB"))
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
