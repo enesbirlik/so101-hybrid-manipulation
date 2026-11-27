@@ -25,6 +25,8 @@ Geometry in wood_detection.py.
 import os
 
 import cv2
+import time
+
 import numpy as np
 import rclpy
 import yaml
@@ -89,6 +91,8 @@ class WoodCubeDetector(Node):
         self.calib_width = c["image_width"]
         self.K, self.K_width, self.rays = None, None, None
         self.fit_cache = {}      # wood_detection.detect_boxes: fits reused while the camera stands still
+        self.last_fit = None
+        self.static_period_s = float(dp("static_period_s", 2.0).value)   # camera still: at most one fit per this
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -157,7 +161,15 @@ class WoodCubeDetector(Node):
         moving = self.arm_moving(stamp_s(msg.header.stamp))
         pose = None if moving else self.camera_pose(msg.header.frame_id, msg.header.stamp)
         good, bad, mask, ided = [], [], None, []
+        if pose is not None and self.static_period_s > 0 and self.last_fit is not None:
+            # the camera stands still: one frame per static_period_s is enough (the fits keep up to
+            # 6 cores busy; ros2_control runs on the same machine)
+            (R0, t0), t_last = self.last_fit
+            dang = np.degrees(np.arccos(np.clip((np.trace(R0.T @ pose[0]) - 1) / 2, -1, 1)))
+            if np.linalg.norm(t0 - pose[1]) < 1e-3 and dang < 0.2 and time.monotonic() - t_last < self.static_period_s:
+                return
         if pose is not None:
+            self.last_fit = (pose, time.monotonic())
             R_wc, t_wc = pose
             try:
                 good, bad, mask = wd.detect_boxes(img, R_wc, t_wc, self.K, self.D, self.table_z, self.prm,

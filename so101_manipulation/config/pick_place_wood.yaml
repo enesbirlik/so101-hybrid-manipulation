@@ -4,8 +4,8 @@
 # fits are reused), against ~15 fps for ArUco, so every wait for frames is longer and asks for fewer.
 cube_pick_place:
   ros__parameters:
-    overview_wait_s: 15.0
-    overview_min_frames: 3
+    overview_wait_s: 25.0   # per pose; the first frame at a new pose takes ~5-13 s
+    overview_min_frames: 2
     search_initial_wait_s: 5.0
     search_view_wait_s: 8.0
     search_empty_frames: 3

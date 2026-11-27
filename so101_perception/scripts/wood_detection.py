@@ -60,14 +60,14 @@ class WoodParams:
     canny: tuple = (25, 70)
     orange_s_min: int = 185            # jaw orange (S ~230) is grown by orange_grow and cut out of the mask; 0 = off
     orange_grow: float = 0.02          # of the image width
-    min_footprint: float = 0.016       # m: blobs whose mid-height footprint is smaller on both sides are not fitted
+    min_footprint: float = 0.022       # m: blobs whose mid-height footprint is smaller on both sides are not fitted
     max_aspect: float = 1.5            # longer / shorter horizontal edge above this = merged cubes, rejected
     border_px: float = 2.0             # contour points this close to the image border are not silhouette edges
     collapse_frac: float = 0.6         # fitted height below this x the shorter footprint edge: refit as a near-cube
     collapse_prior: float = 2.0        # cube prior weight of that refit
     collapse_rms_px: float = 0.8       # the near-cube refit is taken when its contour RMS is at most this much worse
     cache_iou: float = 0.97            # detect_boxes(cache=...): reuse the previous fit of a blob this alike
-    workers: int = 4                   # processes fitting blobs in parallel (<= 1: in this process); 10 kept the load at 17-20 on 12 cores (2026-11-27) next to ros2_control
+    workers: int = 6                   # processes fitting blobs in parallel (<= 1: in this process); 10 kept the load at 17-20 on 12 cores (2026-11-27) next to ros2_control
     start_nfev: int = 25                # max evaluations of each yaw start before the best is refined
     yaw_starts: int = 4
     outline_px: float = 1.2   # the blob outline is moved out by this: 0.5 px (pixel centres) + ~0.7 px the
@@ -430,7 +430,7 @@ def detect_boxes(bgr, R_wc, t_wc, K, D, table_z, prm=WoodParams(), rays_cam=None
             continue
         a, b = sorted(box.size[:2])
         if b / max(a, 1e-6) > prm.max_aspect:
-            for k in (2, 3):
+            for k in ((2, 3) if b / max(a, 1e-6) > 2.4 else (2,)):
                 for part in _split_k(blobs[i], k):
                     split_args.append((part, R_wc, t_wc, K, D, table_z, prm, gray))
                     split_of.append((i, k))
