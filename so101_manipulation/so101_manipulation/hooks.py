@@ -31,6 +31,13 @@ class GripperTorqueLimitHook:
         self.topic = topic
         self.lowered = False
 
+    def set_grasp_limit(self, value: float):
+        """Torque limit for the next grasp (per grip profile: paper 20 %, wood 45 %)."""
+        self.grasp_limit = float(value)
+        self.enabled = self.grasp_limit > 0
+        if self.enabled and self.pub is None:
+            self.pub = self.node.create_publisher(Float64MultiArray, self.topic, 10)
+
     def available(self) -> bool:
         return self.pub is not None and self.pub.get_subscription_count() > 0 and \
             self.motion.gripper_torque_limit() is not None

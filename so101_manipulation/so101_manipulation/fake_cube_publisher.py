@@ -16,7 +16,9 @@ exercise the search; <= 0: always), far_bias_mm [bx, by] added in far views (the
 accurate, so the close-up refinement has something to correct); far = the fixed jaw tip higher
 than far_height (0.10 m) above the table; publish_tracked (true); fov_check (false: the cube is only
 "seen" when its top marker lies in the fisheye image, not behind the jaws and large enough, the
-same model as grasp.visible()).
+same model as grasp.visible()); size_mm [x, y, z] (default [30, 30, 30]: the ArUco cube) = the box
+published in bbox.size (x along the yaw axis, z = height; the centre sits at table + z/2), so a mock run
+can use wooden cubes of different sizes (one publisher per cube, e.g. cube:=11 size_mm:=[45.0, 45.0, 45.0]).
 """
 
 import math
@@ -48,12 +50,16 @@ class FakeCubes(Node):
         self.far_h = float(self.declare_parameter("far_height", 0.10).value)
         self.tracked = bool(self.declare_parameter("publish_tracked", True).value)
         self.fov = bool(self.declare_parameter("fov_check", False).value)
+        sz = [float(v) for v in self.declare_parameter("size_mm", [30.0, 30.0, 30.0]).value]
+        if len(sz) != 3 or min(sz) <= 0:
+            raise ValueError("size_mm: [x, y, z] > 0")
+        self.size = np.array(sz) / 1000
         self.model = ArmModel()
         self.T_gc = (load_hand_eye(perception_config_dir() / "wrist_camera_hand_eye.yaml")
                      if self.vis > 0 or self.fov else None)
         self.cam = load_fisheye(perception_config_dir() / "wrist_camera_fisheye.yaml") if self.fov else None
         self.grip = 0.0
-        self.z = self.model.table_z + 0.015
+        self.z = self.model.table_z + self.size[2] / 2
         self.q, self.q_prev, self.moving_until = None, None, 0.0
         self.rng = np.random.default_rng(1)
         self.track = deque(maxlen=10)       # (centre, yaw)
@@ -64,7 +70,7 @@ class FakeCubes(Node):
         self.pub_tracked = self.create_publisher(Detection3DArray, "/cubes/tracked", 10)
         self.create_timer(1.0 / rate, self.tick)
         self.get_logger().info(f"FAKE cube_{self.k} at ({self.x * 100:.1f}, {self.y * 100:.1f}) cm, yaw "
-                               f"{math.degrees(self.yaw):.0f} deg")
+                               f"{math.degrees(self.yaw):.0f} deg, {'x'.join(f'{v * 1000:.0f}' for v in self.size)} mm")
 
     def on_js(self, m):
         d = dict(zip(m.name, m.position))
@@ -84,12 +90,11 @@ class FakeCubes(Node):
         v = np.array([self.x, self.y, self.z]) - T[:3, 3]
         return math.degrees(math.acos(float(np.clip(T[:3, 2] @ v / np.linalg.norm(v), -1, 1))))
 
-    @staticmethod
-    def fill(d, h, c, yaw):
+    def fill(self, d, h, c, yaw):
         for pose in (h.pose.pose, d.bbox.center):
             pose.position.x, pose.position.y, pose.position.z = map(float, c)
             pose.orientation.z, pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
-        d.bbox.size.x = d.bbox.size.y = d.bbox.size.z = 0.03
+        d.bbox.size.x, d.bbox.size.y, d.bbox.size.z = map(float, self.size)
 
     def tick(self):
         now = self.get_clock().now().to_msg()
@@ -104,7 +109,7 @@ class FakeCubes(Node):
             return
         in_view = self.vis <= 0 or self.angle_from_axis() < self.vis
         if in_view and self.fov:
-            top = np.array([[self.x, self.y, self.z + 0.015]])
+            top = np.array([[self.x, self.y, self.z + self.size[2] / 2]])
             in_view = bool(visible(self.model, self.T_gc, self.cam, self.q, self.grip, top)[0])
         if in_view:
             tip_z = self.model.tip(self.q)[2] - self.model.table_z

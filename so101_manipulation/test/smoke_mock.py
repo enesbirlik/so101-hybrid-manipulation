@@ -29,6 +29,9 @@ It starts its own FAKE cube publisher and pick_place node per scenario (and stop
              to cube_4 is refused (the cube would land on it)
   clutter_refuse  cube_2 (yaw 0, one reachable closing direction) boxed in by cube_3/4/5 4.7 cm away:
              refused in approach, naming the neighbour, before any move to the hover
+  wood       two FAKE wooden cubes of different sizes (cube_11 45 mm, cube_12 25 mm, ids >= 10: wood
+             profile): pick the 25 mm one (simulated contact at its width), the floor follows ITS width
+             (21 mm gap), then stack it on the 45 mm one: released 45 mm up, not at a whole 30 mm level
   memory     a pick that had to sweep, the overview (cube out of view), a second pick: its search
              starts with the view aimed at where the cube was last seen, and is faster
 
@@ -380,6 +383,22 @@ def main():
         assert st4 == S.STATUS_SUCCEEDED, r4.message
         return True, f"pick: {appr[0]}; place next to cube_4 refused: {r3.message.split('|')[0].strip()}"
 
+    def wood():
+        st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="cube_12"))
+        assert st == S.STATUS_SUCCEEDED, f"pick status {st}: {r.message}"
+        floor = (25.0 - 4.0 - 13.0) / 1.35            # wood profile: squeeze_mm 4 below the 25 mm width
+        assert abs(r.hold_angle_deg - floor) < 0.01, f"hold {r.hold_angle_deg:.2f}, floor {floor:.2f}"
+        assert d.min_grip_cmd >= math.radians(floor) - 1e-6, f"gripper command {math.degrees(d.min_grip_cmd):.2f} below the floor"
+        assert any("wood grip: 25.0 mm" in x for x in d.details), d.details
+        s = d.settle_state()
+        assert s["holding"] == "cube_12" and s.get("held_size_mm") is not None, s
+        st2, r2, ph2 = d.call(d.place, PlaceCube.Goal(x=0.0, y=0.0, on_cube_id="cube_11", yaw_deg=float("nan")))
+        assert st2 == S.STATUS_SUCCEEDED, f"place status {st2}: {r2.message}"
+        assert any("top 45.0 mm" in x for x in d.details), [x for x in d.details if "top" in x]
+        return True, (f"pick: contact {r.contact_angle_deg:.1f}, hold {r.hold_angle_deg:.2f} (floor {floor:.2f}), lowest "
+                      f"command {math.degrees(d.min_grip_cmd):.2f}; stack: {r2.message.split('|')[0].strip()}, placed "
+                      f"centre z {r2.placed_position.z * 1000:.1f} mm (base_link)")
+
     def clutter_refuse():
         st, r, ph = d.call(d.pick, PickCube.Goal(cube_id="2"))
         assert st == S.STATUS_ABORTED and r.failed_phase == "approach", f"status {st}: {r.message}"
@@ -403,6 +422,9 @@ def main():
     scenario("memory", {"x": 0.20, "y": 0.08, "yaw_deg": -30.0, "visible_cone_deg": 10.0}, {}, memory)
     scenario("refine", {**base, "far_bias_mm": "[7.0, 0.0]"}, {}, refine)
     scenario("clutter", [base, {"cube": 4, "x": k4[0], "y": k4[1], "yaw_deg": 20.0}], {"sim_contact_deg": 12.5}, clutter)
+    scenario("wood", [{"cube": 11, "x": 0.21, "y": 0.06, "yaw_deg": 10.0, "size_mm": "[45.0, 45.0, 45.0]"},
+                      {"cube": 12, "x": 0.25, "y": -0.07, "yaw_deg": -15.0, "size_mm": "[25.0, 25.0, 25.0]"}],
+             {"sim_contact_deg": round((25.0 - 13.0) / 1.35, 2)}, wood)
     box = [{"cube": 2, "x": 0.22, "y": 0.0, "yaw_deg": 0.0}, {"cube": 4, "x": 0.267, "y": 0.0, "yaw_deg": 0.0},
            {"cube": 5, "x": 0.22, "y": 0.047, "yaw_deg": 0.0}, {"cube": 3, "x": 0.22, "y": -0.047, "yaw_deg": 0.0}]
     scenario("clutter_refuse", box, {}, clutter_refuse)

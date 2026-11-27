@@ -51,6 +51,37 @@ class CubeEstimate:
     age_s: float              # since the newest observation
     count: int
     score: float = 0.0        # mean faces-seen score
+    # measured box size [x, y, z] m (median over the window): x = horizontal edge along the yaw axis,
+    # y = the other horizontal edge, z = height. The ArUco detector fills the nominal edge; a 0 /
+    # missing bbox.size gives the default edge (cube_edge_mm).
+    size: np.ndarray = None
+
+
+DEFAULT_EDGE = 0.03
+
+
+def parse_size(sx, sy, sz, default_edge=DEFAULT_EDGE):
+    """bbox.size -> np.array([x, y, z]) m, or None when it is missing / not positive (no size)."""
+    v = np.array([sx, sy, sz], float)
+    if not np.all(np.isfinite(v)) or np.any(v <= 1e-4):
+        return None
+    return v
+
+
+def median_size(sizes, default_edge=DEFAULT_EDGE) -> np.ndarray:
+    """Per-axis median of the valid sizes, else [edge, edge, edge]."""
+    sz = [s for s in sizes if s is not None]
+    if not sz:
+        return np.full(3, float(default_edge))
+    return np.median(np.array(sz, float), axis=0)
+
+
+def edge_across(size, cube_yaw: float, close_yaw: float) -> float:
+    """The box edge between the jaws when they close along `close_yaw` [m]. Closing along the yaw
+    axis (close_yaw = yaw or yaw + 180) squeezes the two faces normal to it: their distance is
+    size.x; closing at yaw +- 90 gives size.y."""
+    d = close_yaw - cube_yaw
+    return float(size[0] if abs(math.cos(d)) >= abs(math.sin(d)) else size[1])
 
 
 def cube_key(cube_id) -> str:
@@ -77,15 +108,41 @@ def quarter_median(yaws):
     return centre, spread
 
 
+def stack_surface(centre, size, table_z, nominal_edge, snap_m, placed=None):
+    """Top of the cube to stack on, above the table [m], and how it was found.
+
+    Nominal-size cubes (all edges within 2 mm of the nominal one: ArUco): a stacked cube rests at a
+    whole level, so the top snaps to n x edge when within snap_m (the detector puts an upper cube
+    ~7 mm high, which pushed a third level out of reach, 2026-11-22). Other sizes (wood): no whole
+    levels; the top is the measured centre z + height/2, except that a cube whose bottom is within
+    snap_m of the table stands on it (top = its measured height), and a cube this node put down
+    (placed = (xy, top), xy within 10 mm) has the top it was placed at. The release contact stop
+    takes care of the last mm either way."""
+    centre, size = np.asarray(centre, float), np.asarray(size, float)
+    surface = float(centre[2] + size[2] / 2 - table_z)
+    if np.all(np.abs(size - nominal_edge) <= 0.002):
+        level = round(surface / nominal_edge)
+        if level >= 1 and abs(surface - level * nominal_edge) <= snap_m:
+            return level * nominal_edge, f"level {level}"
+        return surface, "measured"
+    if placed is not None and np.linalg.norm(np.asarray(placed[0], float)[:2] - centre[:2]) <= 0.010:
+        return float(placed[1]), "where it was placed"
+    if surface - size[2] <= snap_m:
+        return float(size[2]), "on the table: its measured height"
+    return surface, "measured centre + height/2"
+
+
 class CubeWindow:
     """Recent observations of one cube; pure Python so it can be tested without ROS."""
 
-    def __init__(self, horizon_s: float = 30.0):
-        self.obs = deque()      # (t, centre(3), yaw, score)
+    def __init__(self, horizon_s: float = 30.0, default_edge: float = DEFAULT_EDGE):
+        self.obs = deque()      # (t, centre(3), yaw, score, size(3) or None)
         self.horizon_s = horizon_s
+        self.default_edge = default_edge
 
-    def add(self, t, centre, yaw, score=1.0):
-        self.obs.append((float(t), np.asarray(centre, float), float(yaw), float(score)))
+    def add(self, t, centre, yaw, score=1.0, size=None):
+        self.obs.append((float(t), np.asarray(centre, float), float(yaw), float(score),
+                         None if size is None else np.asarray(size, float)))
         while self.obs and t - self.obs[0][0] > self.horizon_s:
             self.obs.popleft()
 
@@ -121,23 +178,24 @@ class CubeWindow:
                   and math.degrees(yspread) <= max_yaw_spread_deg and n_out <= len(sel) // 4)
         return CubeEstimate(cube_id=cube_id, centre=med, yaw=yaw, stable=bool(stable), spread_mm=spread,
                             yaw_spread_deg=math.degrees(yspread), age_s=float(now - newest), count=len(C2),
-                            score=float(np.mean([o[3] for o in sel])))
+                            score=float(np.mean([o[3] for o in sel])),
+                            size=median_size([o[4] for o in sel], self.default_edge))
 
 
 class TrackedState:
     """Latest filtered estimate of one cube from /cubes/tracked, plus the fresh stamps seen."""
 
-    def __init__(self):
-        self.window = CubeWindow()      # one entry per new image stamp (the filtered centre)
+    def __init__(self, default_edge: float = DEFAULT_EDGE):
+        self.window = CubeWindow(default_edge=default_edge)   # one entry per new image stamp (the filtered centre)
         self.last = None                # (obs_t, centre, yaw, score, spread_xy_mm, spread_yaw_deg)
         self.received = -math.inf       # monotonic time of the last message about this cube
 
-    def add(self, recv_t, obs_t, centre, yaw, score, spread_xy_mm, spread_yaw_deg):
+    def add(self, recv_t, obs_t, centre, yaw, score, spread_xy_mm, spread_yaw_deg, size=None):
         self.received = recv_t
         new_stamp = self.last is None or obs_t > self.last[0] + 1e-4
         self.last = (obs_t, np.asarray(centre, float), float(yaw), float(score), float(spread_xy_mm), float(spread_yaw_deg))
         if new_stamp:
-            self.window.add(obs_t, centre, yaw, score)
+            self.window.add(obs_t, centre, yaw, score, size)
 
     def estimate(self, cube_id, now, since=None, min_fresh=3):
         """The filter's latest output; stable = its stable flag and `min_fresh` new image stamps
@@ -150,7 +208,7 @@ class TrackedState:
         filt_stable = score >= 0.5 and len(fresh) >= min_fresh and (since is None or obs_t >= since)
         return CubeEstimate(cube_id=cube_id, centre=centre.copy(), yaw=yaw, stable=bool(filt_stable),
                             spread_mm=sxy, yaw_spread_deg=syaw, age_s=float(now - obs_t), count=len(fresh),
-                            score=score)
+                            score=score, size=median_size([o[4] for o in list(self.window.obs)[-10:]], self.window.default_edge))
 
 
 class CubeTracker:
@@ -177,10 +235,11 @@ class DetectionsCubeTracker(CubeTracker):
     """CubeTracker on vision_msgs/Detection3DArray (/cubes/detections): own window + median."""
 
     def __init__(self, node, topic="/cubes/detections", window_s=1.5, min_count=5, max_spread_mm=3.0,
-                 max_yaw_spread_deg=4.0, callback_group=None):
+                 max_yaw_spread_deg=4.0, callback_group=None, default_edge=DEFAULT_EDGE):
         from vision_msgs.msg import Detection3DArray
         self.node = node
         self.windows = {}
+        self.default_edge = default_edge
         self.window_s, self.min_count = window_s, min_count
         self.max_spread_mm, self.max_yaw_spread_deg = max_spread_mm, max_yaw_spread_deg
         self.sub = node.create_subscription(Detection3DArray, topic, self.on_detections, 10,
@@ -208,7 +267,9 @@ class DetectionsCubeTracker(CubeTracker):
             except ValueError:
                 continue
             p = d.bbox.center.position
-            self.windows.setdefault(key, CubeWindow()).add(t, [p.x, p.y, p.z], self.yaw_of(d.bbox.center.orientation), score)
+            size = parse_size(d.bbox.size.x, d.bbox.size.y, d.bbox.size.z)
+            self.windows.setdefault(key, CubeWindow(default_edge=self.default_edge)).add(
+                t, [p.x, p.y, p.z], self.yaw_of(d.bbox.center.orientation), score, size)
 
     def get(self, cube_id, since=None):
         key = cube_key(cube_id)
@@ -234,9 +295,10 @@ class TrackedCubeTracker(CubeTracker):
     """CubeTracker on /cubes/tracked (the detector's temporal filter)."""
 
     def __init__(self, node, topic="/cubes/tracked", min_fresh=3, window_s=1.5, min_count=5, max_spread_mm=3.0,
-                 max_yaw_spread_deg=4.0, callback_group=None, detections=None):
+                 max_yaw_spread_deg=4.0, callback_group=None, detections=None, default_edge=DEFAULT_EDGE):
         from vision_msgs.msg import Detection3DArray
         self.node = node
+        self.default_edge = default_edge
         self.detections = detections    # DetectionsCubeTracker: per-frame observations (fresh(), lagging filter)
         self.states = {}
         self.min_fresh, self.window_s, self.min_count = min_fresh, window_s, min_count
@@ -261,8 +323,10 @@ class TrackedCubeTracker(CubeTracker):
             sxy = math.sqrt(max(0.0, 2 * cov[0])) * 1000 if len(cov) > 0 else float("nan")
             syaw = math.degrees(math.sqrt(max(0.0, cov[35]))) if len(cov) > 35 else float("nan")
             yaw = fold_quarter(2 * math.atan2(pose.orientation.z, pose.orientation.w))
-            self.states.setdefault(key, TrackedState()).add(
-                recv, recv - age, [pose.position.x, pose.position.y, pose.position.z], yaw, r.hypothesis.score, sxy, syaw)
+            size = parse_size(d.bbox.size.x, d.bbox.size.y, d.bbox.size.z)
+            self.states.setdefault(key, TrackedState(self.default_edge)).add(
+                recv, recv - age, [pose.position.x, pose.position.y, pose.position.z], yaw, r.hypothesis.score, sxy, syaw,
+                size)
 
     def recent(self, cube_id, within_s=2.0) -> bool:
         st = self.states.get(cube_key(cube_id))

@@ -36,7 +36,7 @@ from std_srvs.srv import Trigger
 from so101_manipulation_interfaces.action import PickCube, PlaceCube
 
 from . import soft_grasp as sg
-from .cube_tracker import FrameClock, cube_key, make_cube_tracker
+from .cube_tracker import FrameClock, cube_key, edge_across, make_cube_tracker, stack_surface
 from .kinematics import ARM, within_limits
 from .grasp import (WEIGHT_TILTED, contact_watch, GraspPlanner, aim_view_pose, camera_pose, default_views, load_fisheye,
                     load_hand_eye, search_order, view_coverage, visible)
@@ -58,7 +58,8 @@ PARAMS = {
     "tracked_topic": ("/cubes/tracked", "filtered cubes (vision_msgs/Detection3DArray, score >= 0.5 = stable)"),
     "detections_topic": ("/cubes/detections", "per-frame cubes (vision_msgs/Detection3DArray)"),
     "obs_min_fresh": (3, "tracked: new image stamps after the arm stopped needed for a fresh stable estimate"),
-    "cube_edge_mm": (30.0, "cube edge"),
+    "cube_edge_mm": (30.0, "nominal cube edge: used when a detection carries no bbox.size (the ArUco detector "
+                           "fills the nominal edge; the wood detector the measured box size)"),
     "obs_window_s": (1.5, "observations older than this (s) are not used for an estimate"),
     "obs_min_count": (5, "observations needed for a stable estimate"),
     "obs_max_spread_mm": (3.0, "stable: every observation within this of the median centre"),
@@ -81,12 +82,18 @@ PARAMS = {
     "overview_min_frames": (8, "overview: processed frames to see after the arm stopped"),
     # grasp geometry
     "open_deg": (30.0, "gripper opening for the approach (~53 mm gap)"),
-    "grasp_tip_height": (0.011, "fixed jaw tip above the cube's bottom at the grasp"),
-    "hover_height": (0.07, "fixed jaw tip above the cube's bottom at the hover"),
+    "grasp_tip_height": (0.011, "fixed jaw tip above the cube's bottom at the grasp (at most grasp_tip_frac x the "
+                                "cube's height)"),
+    "grasp_tip_frac": (0.45, "grasp tip at most this fraction of the cube's measured height above its bottom (cubes < 24 mm "
+                              "only; lower tips push vertical jaws into the table clearance)"),
+    "hover_height": (0.07, "fixed jaw tip above the cube's bottom at the hover (+ the cube's height over "
+                           "cube_edge_mm for taller cubes)"),
     "retreat_clear_m": (0.02, "after a release the jaw tips rise this far over the released cube's top"),
     "retreat_wide_open_deg": (50.0, "...else the jaws open this wide and lean a little to rise off the cube"),
     "retreat_max_back_m": (0.08, "...drawing back toward the base by up to this when straight up is out of reach"),
-    "stack_snap_m": (0.012, "stacking: the lower cube's top snaps to a whole cube level when this close"),
+    "stack_snap_m": (0.012, "stacking: nominal-size cubes: the lower cube's top snaps to a whole cube level when "
+                            "this close; other sizes: a lower cube whose bottom is this close to the table has "
+                            "its top at its measured height (or the top this node placed it at)"),
     "stack_min_rise_m": (0.01, "stacking: the lowest hover above the release height (vertical reach ends ~9 cm up)"),
     "hover_min_height": (0.05, "lowest hover tried when the hover is out of reach"),
     "descend_step": (0.01, "height step of the descent"),
@@ -144,8 +151,8 @@ PARAMS = {
     "contact_samples": (3, "consecutive samples over the threshold"),
     "contact_load_pct": (0.0, "|load - baseline| that also counts as contact; 0 = off"),
     "squeeze_deg": (1.5, "hold target = contact angle - this, never below the floor"),
-    "squeeze_mm": (1.5, "HARD FLOOR: no gripper command below the angle of a gap of cube_edge_mm - this "
-                        "(30 mm -> ~11.5 deg); the closing ramp ends there"),
+    "squeeze_mm": (1.5, "HARD FLOOR: no gripper command below the angle of a gap of (the cube's width between "
+                        "the jaws) - this (30 mm -> ~11.5 deg); the closing ramp ends there"),
     "contact_window_deg": (5.0, "contact must lie within expected +- this, else abort"),
     "gap_zero_mm": (13.0, "jaw gap at 0 deg"),
     "gap_per_deg_mm": (1.35, "jaw gap per degree (<= 30 deg)"),
@@ -159,6 +166,20 @@ PARAMS = {
     "grip_settle_s": (0.4, "wait after the close before judging the grip"),
     "hold_ramp_s": (0.15, "time to move the command to the hold target"),
     "grasp_retries": (1, "retries after a contact outside the window"),
+    "size_uncertainty_mm": (0.0, "paper profile: vision size error, widens the contact window (ArUco: nominal edge)"),
+    "approach_side_mm": (11.5, "approach opening >= the angle of a gap of (cube width + 2 x this), at least open_deg"),
+    "gripper_max_open_deg": (55.0, "largest approach opening (gap model extrapolated above 30 deg: the real gap is "
+                                   "a little wider up to ~55 deg)"),
+    "width_mismatch_mm": (6.0, "warn when the width measured at the contact differs from the vision width by more"),
+    # grip profiles
+    "grip_profile": ("paper", "'paper' (soft: gripper_torque_limit, squeeze_*, close_speed_deg_s) or 'wood' "
+                              "(rigid: the wood_* values)"),
+    "wood_auto_id_min": (10, "cube ids >= this always use the wood profile (wood detector ids); <= 0 = off"),
+    "wood_gripper_torque_limit": (450.0, "wood: gripper torque limit during the grasp, 0.1 % units (45 %)"),
+    "wood_squeeze_deg": (4.0, "wood: hold target = contact angle - this (never below the floor)"),
+    "wood_squeeze_mm": (4.0, "wood: floor = angle of (width - this); capped at 6 mm (soft_grasp.MAX_SQUEEZE_MM)"),
+    "wood_close_speed_deg_s": (8.0, "wood: closing speed inside the contact window"),
+    "wood_size_uncertainty_mm": (3.0, "wood: vision size error, widens the contact window"),
     "sim_contact_deg": (NAN, "MOCK ONLY: pretend a cube blocks the jaws at this angle (NaN = off); "
                              "refused unless robot_description uses mock_components"),
     "gripper_torque_limit": (200.0, "gripper torque limit during the grasp, 0.1 % units (200 = 20 %, holds a "
@@ -184,7 +205,7 @@ PARAMS = {
     "min_move_s": (0.8, "shortest move"),
     "settle_s": (0.3, "pause after each move"),
     "transit_clearance_mm": (45.0, "lowest point (arm, camera, carried cube) above the table on transits; "
-                                   "cubes are 30 mm tall"),
+                                   "a carried cube counts with its own height"),
     "via_height": (0.12, "tip height of the via pose above a target"),
     "table_z": (NAN, "table surface in base_link; NaN = so101_kinematics.yaml"),
 }
@@ -246,7 +267,8 @@ class PickPlaceNode(Node):
         self.tracker = make_cube_tracker(self, p.cube_source, p.detections_topic, p.tracked_topic,
                                          int(p.obs_min_fresh), window_s=p.obs_window_s,
                                          min_count=int(p.obs_min_count), max_spread_mm=p.obs_max_spread_mm,
-                                         max_yaw_spread_deg=p.obs_max_yaw_spread_deg, callback_group=self.cg)
+                                         max_yaw_spread_deg=p.obs_max_yaw_spread_deg, callback_group=self.cg,
+                                         default_edge=p.cube_edge_mm / 1000)
         self.motion = Motion(self, self.cg, p.min_move_s, self.roll_limit, p.settle_s)
         self.sg = sg.SoftGraspParams(
             closing_speed_deg_s=p.close_speed_deg_s, lag_deg=p.contact_lag_deg, samples=int(p.contact_samples),
@@ -260,12 +282,13 @@ class PickPlaceNode(Node):
         self.hook = GripperTorqueLimitHook(self, self.motion, p.gripper_torque_limit, p.gripper_torque_restore,
                                            p.torque_limit_topic, p.torque_limit_timeout_s, p.torque_limit_required)
         self.expected_contact = sg.expected_contact_deg(p.cube_edge_mm, p.gap_zero_mm, p.gap_per_deg_mm)
-        self.edge = p.cube_edge_mm / 1000
+        self.edge = p.cube_edge_mm / 1000          # NOMINAL edge: fallback when a cube has no measured size
+        self.nominal_floor_rad = math.radians(self.floor_deg)
+        self.placed_tops = {}      # cube -> (xy, top above the table) where this node put it down
         # clutter: the jaws' and camera's mesh points (other cubes are obstacles), and the smallest
         # opening the fallback may use (never below the closing ramp's fast part)
         self.footprint = cl.HandFootprint(self.model)
-        self.min_open_deg = max(cl.min_open_deg(p.cube_edge_mm, p.clutter_min_side_mm, p.gap_zero_mm, p.gap_per_deg_mm),
-                                self.expected_contact + p.contact_window_deg + 1.0, self.floor_deg + 2.0)
+        self.min_open_deg = self.min_open_for(self.sg)
         self.busy = threading.Lock()
         self.status = {"state": "idle", "action": "", "cube": "", "phase": "", "held": None, "holding": None,
                        "last": None}
@@ -304,6 +327,8 @@ class PickPlaceNode(Node):
     def holding(self, value):
         self._holding = value
         self.status["held"] = self.status["holding"] = None if value is None else value["cube"]
+        self.status["held_size_mm"] = (None if value is None or value.get("size") is None
+                                       else [round(float(v) * 1000, 1) for v in value["size"]])
         self.publish_state()
 
     def set_status(self, **kw):
@@ -340,12 +365,20 @@ class PickPlaceNode(Node):
             with self.memory_lock:
                 m = self.memory.get(k)
                 if m is None or t_obs > m["t"] + 1e-3:
-                    self.memory[k] = {"centre": np.array(est.centre, float), "yaw": float(est.yaw), "t": t_obs}
+                    self.memory[k] = {"centre": np.array(est.centre, float), "yaw": float(est.yaw), "t": t_obs,
+                                      "size": self.size_of(est)}
 
-    def remember(self, cube, centre, yaw=0.0):
+    def remember(self, cube, centre, yaw=0.0, size=None):
         with self.memory_lock:
+            old = self.memory.get(cube, {}).get("size")
             self.memory[cube] = {"centre": None if centre is None else np.array(centre, float), "yaw": float(yaw),
-                                 "t": time.monotonic()}
+                                 "t": time.monotonic(), "size": old if size is None else np.asarray(size, float)}
+
+    def mem_size(self, cube):
+        with self.memory_lock:
+            m = self.memory.get(cube)
+        s = None if m is None else m.get("size")
+        return np.full(3, self.edge) if s is None else np.asarray(s, float)
 
     def last_seen(self, cube):
         with self.memory_lock:
@@ -525,10 +558,70 @@ class PickPlaceNode(Node):
 
     # --- perception helpers -------------------------------------------------------------------
 
+    def size_of(self, est):
+        """[x, y, z] m of a cube estimate (x along its yaw axis), the nominal edge if it has none."""
+        s = getattr(est, "size", None)
+        return np.full(3, self.edge) if s is None else np.asarray(s, float)
+
     def surface_base(self, est):
         """Height of the cube's bottom above the table (0 on the table, ~edge on another cube)."""
-        b = float(est.centre[2] - self.edge / 2 - self.model.table_z)
+        b = float(est.centre[2] - self.size_of(est)[2] / 2 - self.model.table_z)
         return b if b > 0.008 else 0.0
+
+    # --- per-cube grip ------------------------------------------------------------------------
+
+    def profile_for(self, cube) -> sg.GripProfile:
+        """Grip profile of a cube: grip_profile, or 'wood' for ids >= wood_auto_id_min."""
+        p = self.p
+        name = str(p.grip_profile).strip().lower()
+        try:
+            k = int(cube_key(cube)[5:])
+        except ValueError:
+            k = -1
+        if int(p.wood_auto_id_min) > 0 and k >= int(p.wood_auto_id_min):
+            name = "wood"
+        if name == "wood":
+            return sg.GripProfile("wood", p.wood_gripper_torque_limit, p.wood_squeeze_deg, p.wood_squeeze_mm,
+                                  p.wood_close_speed_deg_s, p.wood_size_uncertainty_mm)
+        if name != "paper":
+            raise Fail("setup", f"unknown grip_profile '{p.grip_profile}' (paper, wood)")
+        return sg.GripProfile("paper", p.gripper_torque_limit, p.squeeze_deg, p.squeeze_mm, p.close_speed_deg_s,
+                              p.size_uncertainty_mm)
+
+    def min_open_for(self, P):
+        """Smallest opening the clutter fallback may use for grasp params P (never below the fast part
+        of the closing ramp)."""
+        p = self.p
+        expected = sg.expected_contact_deg(P.edge_mm, P.gap_zero_mm, P.gap_per_deg_mm)
+        return max(cl.min_open_deg(P.edge_mm, p.clutter_min_side_mm, p.gap_zero_mm, p.gap_per_deg_mm),
+                   expected + P.window_deg + 1.0, sg.floor_deg(P) + 2.0)
+
+    def grip_for(self, cube, est, close_yaw=None):
+        """Grasp parameters of THIS cube: width between the jaws (the edge across close_yaw; the wider
+        horizontal edge when close_yaw is None), SoftGraspParams (floor, expected contact, window),
+        approach opening, smallest clutter opening, profile."""
+        p = self.p
+        size = self.size_of(est)
+        prof = self.profile_for(cube)
+        width = (max(size[0], size[1]) if close_yaw is None else edge_across(size, est.yaw, close_yaw)) * 1000
+        P = sg.params_for_width(self.sg, width, prof)
+        wide = sg.params_for_width(self.sg, max(size[0], size[1]) * 1000, prof)
+        open_deg = sg.approach_open_deg(max(size[0], size[1]) * 1000, p.open_deg, p.approach_side_mm,
+                                        p.gripper_max_open_deg, p.gap_zero_mm, p.gap_per_deg_mm)
+        return SimpleNamespace(profile=prof, size=size, width_mm=width, P=P,
+                               expected=sg.expected_contact_deg(width, P.gap_zero_mm, P.gap_per_deg_mm),
+                               floor=sg.floor_deg(P), open_deg=open_deg,
+                               min_open_deg=min(open_deg, self.min_open_for(wide)))
+
+    def heights_for(self, est):
+        """(hover, lowest hover, grasp tip) above the table for this cube: the tip stays at most
+        grasp_tip_frac x its height above its bottom; taller cubes hover higher by the extra height."""
+        p = self.p
+        base = self.surface_base(est)
+        h = float(self.size_of(est)[2])
+        extra = max(0.0, h - self.edge)
+        return (p.hover_height + base + extra, p.hover_min_height + base + extra,
+                base + min(p.grasp_tip_height, p.grasp_tip_frac * h))
 
     def look(self, cube, since, timeout):
         """Stable estimate of `cube` from observations after `since`, or None. Gives up early once
@@ -547,13 +640,13 @@ class PickPlaceNode(Node):
             time.sleep(0.05)
         return None
 
-    def aimed_view(self, centre):
+    def aimed_view(self, centre, height=None):
         """A view with the camera looking down at `centre` (the cube's last known position), from
         the first of search_aim_heights that sees its top face past the jaws; None if none does."""
         if self.T_gc is None or centre is None:
             return None
         grip = math.radians(max(self.p.search_gripper_deg, self.floor_deg))
-        top = np.array([centre[0], centre[1], centre[2] + self.edge / 2])
+        top = np.array([centre[0], centre[1], centre[2] + (self.edge if height is None else height) / 2])
         for h in self.p.search_aim_heights:
             q = aim_view_pose(self.model, self.T_gc, top, float(h), self.roll_limit_view)
             if self.model.lowest(q, grip)[1] < self.p.transit_clearance_mm / 1000:
@@ -567,7 +660,8 @@ class PickPlaceNode(Node):
         overview pose(s), then autograb's views sorted by how close their optical axis points to
         that last known position."""
         hint = self.last_seen(cube)
-        return search_order(self.model, self.T_gc, self.views, self.overviews, hint, self.aimed_view(hint))
+        return search_order(self.model, self.T_gc, self.views, self.overviews, hint,
+                            self.aimed_view(hint, float(self.mem_size(cube)[2])))
 
     def search(self, cube):
         p = self.p
@@ -623,23 +717,27 @@ class PickPlaceNode(Node):
             if k in exclude or m["centre"] is None or now - m["t"] > p.clutter_max_age_s:
                 continue
             c = np.asarray(m["centre"], float)
-            top = float(c[2] + self.edge / 2 - self.model.table_z)
-            if np.linalg.norm(c[:2] - np.asarray(xy, float)[:2]) < self.edge / 2 and top <= bottom + 0.008:
+            size = np.full(3, self.edge) if m.get("size") is None else np.asarray(m["size"], float)
+            foot = float(max(size[0], size[1]))       # square footprint of the longer edge (conservative)
+            top = float(c[2] + size[2] / 2 - self.model.table_z)
+            if np.linalg.norm(c[:2] - np.asarray(xy, float)[:2]) < foot / 2 and top <= bottom + 0.008:
                 continue            # under the target: its support
-            out.append(cl.Obstacle(k, c[:2].copy(), float(m["yaw"]), max(top, self.edge), self.edge))
+            out.append(cl.Obstacle(k, c[:2].copy(), float(m["yaw"]), max(top, float(size[2])), foot))
         return cl.near(out, xy)
 
-    def clutter_accept(self, obstacles, grips_deg, release_deg=None):
-        """accept(plan) for the planner (clutter.make_accept with this node's margin and cube edge)."""
-        return cl.make_accept(self.footprint, obstacles, grips_deg, self.p.clutter_margin_mm / 1000, self.edge,
-                              release_deg=release_deg)
+    def clutter_accept(self, obstacles, grips_deg, release_deg=None, edge=None):
+        """accept(plan) for the planner (clutter.make_accept with this node's margin and the cube's edge)."""
+        return cl.make_accept(self.footprint, obstacles, grips_deg, self.p.clutter_margin_mm / 1000,
+                              self.edge if edge is None else edge, release_deg=release_deg)
 
-    def openings(self, obstacles):
+    def openings(self, obstacles, open_deg=None, min_deg=None):
         """Jaw openings to try [deg], largest first (clutter.openings)."""
-        return cl.openings(self.p.open_deg, self.min_open_deg, obstacles)
+        return cl.openings(self.p.open_deg if open_deg is None else open_deg,
+                           self.min_open_deg if min_deg is None else min_deg, obstacles)
 
-    def clutter_refusal(self, what, xy, accepts):
-        return cl.refusal(what, xy, accepts, self.p.clutter_margin_mm / 1000, self.min_open_deg)
+    def clutter_refusal(self, what, xy, accepts, min_deg=None):
+        return cl.refusal(what, xy, accepts, self.p.clutter_margin_mm / 1000,
+                          self.min_open_deg if min_deg is None else min_deg)
 
     def plan_grasp(self, cube, est, prefer_roll=None):
         """Grasp plan for `cube` at `est`, clear of the other cubes the node knows (clutter.plan_among:
@@ -649,16 +747,30 @@ class PickPlaceNode(Node):
         p = self.p
         obstacles = self.neighbours({cube}, est.centre[:2], base)
         t0 = time.monotonic()
+        g = self.grip_for(cube, est)
+        size = g.size
+        hover_h, hover_min_h, grasp_h = self.heights_for(est)
+        # an irregular box: close across its narrower edge first (smaller width, less opening)
+        narrow = None
+        if abs(size[0] - size[1]) > 0.004:
+            narrow = [y for y in self.planner.close_options(est.yaw)
+                      if edge_across(size, est.yaw, y) <= min(size[0], size[1]) + 1e-9]
 
         def plan_fn(open_deg, accept):
-            return self.planner.plan_cube(est.centre[:2], est.yaw, math.radians(open_deg), p.hover_height + base,
-                                          p.hover_min_height + base, p.grasp_tip_height + base, p.descend_step,
-                                          p.gap_fraction, prefer_roll=prefer_roll, cube_bottom=base, edge=self.edge,
-                                          accept=accept)
-        plan, msg, accepts = cl.plan_among(plan_fn, self.footprint, obstacles, p.open_deg, self.min_open_deg,
-                                           p.clutter_margin_mm / 1000, self.edge)
+            res = None
+            for yaws in ([narrow] if narrow else []) + [None]:
+                res = self.planner.plan_cube(est.centre[:2], est.yaw, math.radians(open_deg), hover_h, hover_min_h,
+                                             grasp_h, p.descend_step, p.gap_fraction, prefer_roll=prefer_roll,
+                                             close_yaws=yaws, cube_bottom=base, edge=float(size[2]), accept=accept)
+                if res[0] is not None:
+                    break
+            return res
+        plan, msg, accepts = cl.plan_among(plan_fn, self.footprint, obstacles, g.open_deg, g.min_open_deg,
+                                           p.clutter_margin_mm / 1000, float(max(size[0], size[1])))
         if plan is None:
-            raise Fail("approach", self.clutter_refusal(f"no clear grasp of {cube}", est.centre[:2], accepts) or msg)
+            raise Fail("approach", self.clutter_refusal(f"no clear grasp of {cube}", est.centre[:2], accepts,
+                                                        g.min_open_deg) or msg)
+        plan.grasp_tip_rel = grasp_h - base      # fixed tip above the cube's bottom at the grasp
         if obstacles:
             near_ = min(obstacles, key=lambda o: np.linalg.norm(o.xy - est.centre[:2]))
             self.get_logger().info(
@@ -759,7 +871,8 @@ class PickPlaceNode(Node):
         still straddle the cube; closing them there later carried the top cube off (2026-11-22). Rise
         straight up if reachable, else rise while drawing back toward the base."""
         p = self.p
-        top = surface + self.edge                                    # released cube's top above the table
+        hsize = np.asarray(held.get("size") if held.get("size") is not None else np.full(3, self.edge), float)
+        top = surface + float(hsize[2])                              # released cube's top above the table
         goal_h = top + p.retreat_clear_m
         q_now = np.asarray(self.motion.q_arm())
         h_now = float(self.model.tip(q_now)[2] - self.model.table_z)
@@ -783,7 +896,7 @@ class PickPlaceNode(Node):
         self.gripper_to(p.retreat_wide_open_deg, p.open_speed_deg_s)
         q_now = np.asarray(self.motion.q_arm())
         start = self.model.tips(q_now, wide)[1:]
-        foot = self.edge / 2 + 0.014
+        foot = float(max(hsize[0], hsize[1])) / 2 + 0.014
 
         def over(pt):
             return abs(pt[0] - xy0[0]) < foot and abs(pt[1] - xy0[1]) < foot
@@ -906,13 +1019,17 @@ class PickPlaceNode(Node):
             self.feedback("descend", f"bottom trim: tip {h_now * 100:.1f} -> {h2 * 100:.1f} cm (goal {hs[-1] * 100:.1f})")
         return len(plan.descent) - 1
 
-    def soft_close(self):
+    def soft_close(self, P=None, expected=None):
         """Close slowly down to the floor (never lower), stop early on a contact, then judge the grip.
+        P / expected: this grasp's SoftGraspParams and expected contact angle (grip_for), default the
+        nominal cube's.
 
         Returns (state, hold command deg, contact event or None, why) with state one of
         sg.HELD / sg.EMPTY / sg.UNCERTAIN, or "early" for a contact above the window (something
         wider than the cube between the jaws; the jaws are frozen there)."""
-        p, P = self.p, self.sg
+        p = self.p
+        P = self.sg if P is None else P
+        expected = self.expected_contact if expected is None else expected
         # static baseline: the gripper standing open
         t0 = time.monotonic()
         time.sleep(0.3)
@@ -922,18 +1039,18 @@ class PickPlaceNode(Node):
             lags.append(sg.simulated_measurement(ref, fb, p.sim_contact_deg) - ref)
         load0 = self.motion.gripper_load()
         start = self.grip_measured_deg()
-        end = sg.ramp_end_deg(self.expected_contact, P)          # = the floor
+        end = sg.ramp_end_deg(expected, P)          # = the floor
         # fast down to slow_from (above the window, where no contact counts), slow from there to the floor
-        ramp, slow_from = sg.close_ramp(start, self.expected_contact, P, p.close_fast_speed_deg_s, p.close_slow_lead_deg)
+        ramp, slow_from = sg.close_ramp(start, expected, P, p.close_fast_speed_deg_s, p.close_slow_lead_deg)
         assert ramp[-1][0] == end and all(a >= end for a, _ in ramp)     # HARD RULE: never below the floor
         dur = ramp[-1][1]
         det = sg.ContactDetector(P, static_baseline_lag=float(np.median(lags)) if lags else 0.0,
                                  static_baseline_load=0.0 if math.isnan(load0) else load0,
-                                 ignore_above_deg=self.expected_contact + P.window_deg,
+                                 ignore_above_deg=expected + P.window_deg,
                                  baseline_below_deg=slow_from + 1e-6)
         self.feedback("grasp", f"closing {start:.1f} -> {slow_from:.1f} fast, -> {end:.2f} deg (floor) at "
                                f"{P.closing_speed_deg_s:.0f} deg/s, {dur:.1f} s in all; contact expected at "
-                               f"{self.expected_contact:.1f} deg, abort above {self.expected_contact + P.window_deg:.1f}")
+                               f"{expected:.1f} deg, abort above {expected + P.window_deg:.1f}")
         traj = sg.ramp_trajectory(start, ramp, P)
         assert traj[-1][0] == end and all(a >= end for a, _, _ in traj)
         dur = traj[-1][2]
@@ -964,14 +1081,19 @@ class PickPlaceNode(Node):
             time.sleep(0.005)
         hold = end
         if ev is not None:
-            if ev.angle_deg > self.expected_contact + P.window_deg:
+            if ev.angle_deg > expected + P.window_deg:
                 # freeze where the jaws are (no further squeeze); the caller opens again
                 self.motion.run("gripper", [[math.radians(ev.angle_deg)]], times=[0.1], settle=False)
-                return "early", NAN, ev, (f"contact at {ev.angle_deg:.1f} deg, expected {self.expected_contact:.1f} "
-                                          f"+- {P.window_deg:.0f} (cube edge {p.cube_edge_mm:.0f} mm)")
+                return "early", NAN, ev, (f"contact at {ev.angle_deg:.1f} deg, expected {expected:.1f} "
+                                          f"+- {P.window_deg:.1f} (width {P.edge_mm:.1f} mm)")
             hold = sg.hold_target_deg(ev.angle_deg, P)              # >= the floor
             self.motion.run("gripper", [[math.radians(hold)]], times=[p.hold_ramp_s], settle=False)
-            self.feedback("grasp", f"contact at {ev.angle_deg:.2f} deg (by {ev.by}): holding at {hold:.2f} deg")
+            meas = sg.gap_mm(ev.angle_deg, P)
+            self.feedback("grasp", f"contact at {ev.angle_deg:.2f} deg (by {ev.by}): measured width {meas:.1f} mm "
+                                   f"(vision {P.edge_mm:.1f}), holding at {hold:.2f} deg")
+            if abs(meas - P.edge_mm) > p.width_mismatch_mm:
+                self.get_logger().warn(f"width at the contact {meas:.1f} mm vs vision {P.edge_mm:.1f} mm "
+                                       f"(> {p.width_mismatch_mm:.0f} mm apart): holding on the measured contact")
         # judge the grip standing still: angle vs where empty jaws stop, and the current
         time.sleep(p.grip_settle_s)
         g = self.grip_measured_deg()
@@ -985,6 +1107,7 @@ class PickPlaceNode(Node):
         self.gripper_to(plan.open_deg or self.p.open_deg, self.p.open_speed_deg_s)
         self.hook.restore()
         self.continuous(plan.retreat_poses(), self.p.lift_speed, bias=self.arm_bias)   # tilted: along the line, then up
+        self.motion.gripper_floor = self.nominal_floor_rad
 
     def execute_pick(self, gh):
         res = PickCube.Result()
@@ -1001,12 +1124,13 @@ class PickPlaceNode(Node):
             if self.holding is not None:
                 # the record may be stale: someone took the cube out of the jaws by hand
                 g = self.grip_measured_deg()
-                state, why = sg.grip_state(g, self.holding["hold_deg"], self.sg,
+                state, why = sg.grip_state(g, self.holding["hold_deg"], self.holding.get("sg", self.sg),
                                            self.motion.gripper_current_ma(self.p.current_window_s))
                 if state != sg.EMPTY:
                     raise Fail("setup", f"already holding {self.holding['cube']}: place it first ({why})")
                 self.feedback("setup", f"{self.holding['cube']} is no longer between the jaws ({why})")
                 self.holding = None
+                self.motion.gripper_floor = self.nominal_floor_rad
                 self.hook.restore()
             p = self.p
             phase = self.enter("search")
@@ -1048,15 +1172,24 @@ class PickPlaceNode(Node):
                     gh.succeed()
                     return res
                 phase = self.enter("descend")
-                # HOOK(torque-limit): 20 % during the grasp, confirmed by the readback; checked here
-                # while the arm is still at the hover
+                # this cube's grip: the width between the jaws for the chosen closing direction
+                grip = self.grip_for(cube, est, plan.close_yaw)
+                self.feedback("descend", f"{grip.profile.name} grip: {grip.width_mm:.1f} mm between the jaws (box "
+                                         f"{'x'.join(f'{v * 1000:.0f}' for v in grip.size)} mm), contact expected at "
+                                         f"{grip.expected:.1f} deg, floor {grip.floor:.2f} deg, window "
+                                         f"+-{grip.P.window_deg:.1f}, torque limit {grip.profile.torque_limit:.0f}")
+                # HOOK(torque-limit): 20 % (paper) / 45 % (wood) during the grasp, confirmed by the
+                # readback; checked here while the arm is still at the hover
+                self.hook.set_grasp_limit(grip.profile.torque_limit)
                 ok, why = self.hook.lower(is_mock=self.is_mock is True)
                 self.feedback("descend", why)
                 if not ok:
                     raise Fail("grasp", f"{why}: not grasping")
                 self.descend(plan, plan.open_deg)
                 phase = self.enter("grasp")
-                state, hold, ev, why = self.soft_close()
+                # HARD RULE: this cube's floor for every gripper goal while it may be between the jaws
+                self.motion.gripper_floor = math.radians(grip.floor)
+                state, hold, ev, why = self.soft_close(grip.P, grip.expected)
                 if ev is not None:
                     res.contact_angle_deg = float(ev.angle_deg)
                 if state == "early":
@@ -1073,8 +1206,16 @@ class PickPlaceNode(Node):
                     raise Fail("verify", f"not held: {why}")
                 if ev is None:
                     res.contact_angle_deg = float(self.grip_measured_deg())
+                # the held cube's size: vision, with the edge between the jaws as measured at the contact
+                held_size = np.array(grip.size, float)
+                width = sg.gap_mm(res.contact_angle_deg, grip.P) if ev is not None else grip.width_mm
+                if abs(width - grip.width_mm) > p.width_mismatch_mm:
+                    d = plan.close_yaw - est.yaw
+                    held_size[0 if abs(math.cos(d)) >= abs(math.sin(d)) else 1] = width / 1000
                 self.holding = {"cube": cube, "hold_deg": hold, "contact_deg": res.contact_angle_deg,
-                                "grasp_h": p.grasp_tip_height, "roll": plan.roll}
+                                "grasp_h": getattr(plan, "grasp_tip_rel", p.grasp_tip_height), "roll": plan.roll,
+                                "size": held_size, "width_mm": width, "sg": grip.P, "open_deg": grip.open_deg,
+                                "min_open_deg": grip.min_open_deg}
                 if plan.line is not None:
                     # HOOK(tilt): a tilted hold is placed with the same hand orientation (lean + roll)
                     self.holding.update(lean=plan.lean, cube_in_hand=plan.cube_in_hand,
@@ -1090,13 +1231,14 @@ class PickPlaceNode(Node):
                 time.sleep(0.3)
                 g = self.grip_measured_deg()
                 res.held_angle_deg = float(g)
-                ok, why = sg.held(g, hold, self.sg, self.motion.gripper_current_ma(p.current_window_s))
+                ok, why = sg.held(g, hold, grip.P, self.motion.gripper_current_ma(p.current_window_s))
                 if not ok:
                     self.holding = None
+                    self.motion.gripper_floor = self.nominal_floor_rad
                     raise Fail("lift", f"lost the cube while lifting: {why} (gripper left as it is)")
                 res.success = True
-                res.message = (f"holding {cube}: contact {res.contact_angle_deg:.2f} deg, hold command {hold:.2f}, "
-                               f"measured {g:.2f} after the lift")
+                res.message = (f"holding {cube}: contact {res.contact_angle_deg:.2f} deg ({width:.1f} mm), hold "
+                               f"command {hold:.2f}, measured {g:.2f} after the lift")
                 self.feedback("lift", res.message)
                 res.message += self.finish_timing("pick", cube, True)
                 gh.succeed()
@@ -1116,6 +1258,8 @@ class PickPlaceNode(Node):
             gh.abort()
             return res
         finally:
+            if self.holding is None:
+                self.motion.gripper_floor = self.nominal_floor_rad
             self.end()
 
     # --- place --------------------------------------------------------------------------------
@@ -1142,10 +1286,15 @@ class PickPlaceNode(Node):
                 if state != sg.HELD:
                     raise Fail("setup", f"not holding a cube (PickCube first): {why}")
                 self.holding = {"cube": "cube (held at start)", "hold_deg": self.floor_deg, "contact_deg": g,
-                                "grasp_h": self.p.grasp_tip_height, "roll": self.motion.q_arm()[4]}
+                                "grasp_h": self.p.grasp_tip_height, "roll": self.motion.q_arm()[4],
+                                "size": np.full(3, self.edge), "sg": self.sg}
                 self.feedback("setup", f"a cube is between the jaws: {why}")
             p, req, held = self.p, gh.request, self.holding
             grip = held["hold_deg"]
+            hsize = np.asarray(held.get("size") if held.get("size") is not None else np.full(3, self.edge), float)
+            held_h, held_foot = float(hsize[2]), float(max(hsize[0], hsize[1]))
+            rel_open = held.get("open_deg", p.open_deg)
+            rel_min = held.get("min_open_deg", self.min_open_deg)
             yaws = None
             target = np.array([req.x, req.y], float)
             surface = 0.0
@@ -1155,13 +1304,10 @@ class PickPlaceNode(Node):
                 if lower is None or lower.age_s > p.stack_max_age_s:
                     raise Fail("setup", f"{cube_key(on)} not seen in the last {p.stack_max_age_s:.0f} s")
                 target = lower.centre[:2].copy()
-                surface = float(lower.centre[2] + self.edge / 2 - self.model.table_z)
-                # A stacked cube can only rest at a whole level (table, or n cubes up). The detector puts
-                # an upper cube ~7 mm high (no table prior up there), which pushed a third level out of
-                # vertical reach (2026-11-22): snap to the nearest level when it is close.
-                level = round(surface / self.edge)
-                if level >= 1 and abs(surface - level * self.edge) <= p.stack_snap_m:
-                    surface = level * self.edge
+                surface, how = stack_surface(lower.centre, self.size_of(lower), self.model.table_z, self.edge,
+                                             p.stack_snap_m, self.placed_tops.get(cube_key(on)))
+                self.feedback("setup", f"{cube_key(on)}: top {surface * 1000:.1f} mm above the table ({how}); "
+                                       f"held cube {held_h * 1000:.0f} mm tall")
                 yaws = self.planner.close_options(lower.yaw)
             elif not math.isnan(req.yaw_deg):
                 yaws = self.planner.close_options(math.radians(req.yaw_deg))
@@ -1172,21 +1318,22 @@ class PickPlaceNode(Node):
 
             def plan_at(xy, yaws_):
                 obstacles = self.neighbours(skip, xy, surface)
-                acc = (self.clutter_accept(obstacles, [grip], release_deg=self.openings(obstacles))
+                acc = (self.clutter_accept(obstacles, [grip], release_deg=self.openings(obstacles, rel_open, rel_min),
+                                           edge=held_foot)
                        if obstacles else None)
                 where = f"({xy[0] * 100:.1f}, {xy[1] * 100:.1f}) cm"
                 if held.get("lean") is not None:
                     # HOOK(tilt): same lean and roll as at the grasp, so the cube stays flat; its yaw
                     # follows from the pan (no closing-direction choice)
                     pl, why = self.planner.plan_place_held(
-                        xy, surface + self.edge / 2 + p.release_gap, held["cube_in_hand"], held["lean"], held["roll"],
-                        math.radians(grip), p.hover_height - p.grasp_tip_height, p.descend_step, edge=self.edge)
+                        xy, surface + held_h / 2 + p.release_gap, held["cube_in_hand"], held["lean"], held["roll"],
+                        math.radians(grip), p.hover_height - p.grasp_tip_height, p.descend_step, edge=held_h)
                     if pl is None:
                         raise Fail("carry", f"no place pose at {where} for a cube "
                                             f"held at {math.degrees(held['lean']):+.0f} deg lean: {why}")
                     if acc is not None and not acc(pl)[0]:
-                        raise Fail("carry", self.clutter_refusal(f"no clear place at {where}", xy, [acc]))
-                    pl.release_deg = pl.release_deg or p.open_deg
+                        raise Fail("carry", self.clutter_refusal(f"no clear place at {where}", xy, [acc], rel_min))
+                    pl.release_deg = pl.release_deg or rel_open
                     return pl
                 heights = list(np.arange(hover_h, release_h + (p.stack_min_rise_m if on else 0.03) - 1e-4, -0.005))
                 options = [yaws_ if yaws_ is not None else [None]]
@@ -1206,9 +1353,9 @@ class PickPlaceNode(Node):
                     if pl is not None or acc is None or acc.stats["rejected"] == 0:
                         break
                 if pl is None:
-                    why = self.clutter_refusal(f"no clear place at {where}", xy, [acc]) if acc is not None else ""
+                    why = self.clutter_refusal(f"no clear place at {where}", xy, [acc], rel_min) if acc is not None else ""
                     raise Fail("carry", why or f"no place pose at {where}: " + " | ".join(reasons[:3]))
-                pl.release_deg = pl.release_deg or p.open_deg
+                pl.release_deg = pl.release_deg or rel_open
                 if obstacles:
                     self.get_logger().info(f"clutter: {len(obstacles)} cube(s) near the place {where}: closing along "
                                            f"{math.degrees(pl.close_yaw):+.0f} deg, release opening {pl.release_deg:.1f} "
@@ -1247,10 +1394,12 @@ class PickPlaceNode(Node):
                 Th = self.model.hand(q_rel)
                 centre = Th[:3, :3] @ plan.cube_in_hand + Th[:3, 3]
             res.placed_position = Point(x=float(centre[0]), y=float(centre[1]),
-                                        z=float(self.model.table_z + surface + self.edge / 2))
+                                        z=float(self.model.table_z + surface + held_h / 2))
             self.holding = None
+            self.motion.gripper_floor = self.nominal_floor_rad
             if held["cube"].startswith("cube_"):
-                self.remember(held["cube"], [centre[0], centre[1], res.placed_position.z])
+                self.remember(held["cube"], [centre[0], centre[1], res.placed_position.z], size=hsize)
+                self.placed_tops[held["cube"]] = (np.array(centre[:2], float), float(surface + held_h))
             phase = self.enter("retreat")
             self.feedback("retreat", "up to the hover")
             # one continuous move up, with the bias the descent used
@@ -1315,7 +1464,8 @@ class PickPlaceNode(Node):
                 continue
             out.append({"id": k, "x_cm": round(float(est.centre[0]) * 100, 1), "y_cm": round(float(est.centre[1]) * 100, 1),
                         "z_cm": round(float(est.centre[2]) * 100, 1), "yaw_deg": round(math.degrees(est.yaw), 1),
-                        "stable": bool(est.stable), "age_s": round(float(est.age_s), 2)})
+                        "stable": bool(est.stable), "age_s": round(float(est.age_s), 2),
+                        "size_mm": [round(float(v) * 1000, 1) for v in self.size_of(est)]})
         return out
 
     def on_overview(self, _req, resp):

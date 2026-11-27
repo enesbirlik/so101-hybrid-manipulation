@@ -222,6 +222,55 @@ def ramp_trajectory(start_deg: float, pts, p: SoftGraspParams, step_deg: float =
     return out
 
 
+# --- per-object grasp parameters (wooden cubes of different sizes) ------------------------------
+#
+# The gap model (gap ~= 13 mm + 1.35 mm/deg) was measured up to 30 deg. Beyond that it is an
+# extrapolation: the jaw-mesh tips of the URDF give a gap that stays ~5 mm WIDER than the model up to
+# 50 deg (40 deg: mesh 72 mm, model 67; 50 deg: 84 vs 80.5) and about equal at 60 deg. So an opening
+# computed with the model is at least as wide as asked for up to ~55 deg: good enough for the
+# approach opening, which only needs to be wide enough. Contact angles and the floor of cubes up to
+# ~50 mm lie at <= 28 deg, inside the measured range.
+
+MAX_SQUEEZE_MM = 6.0     # the floor never sits more than this below the object width, whatever the profile says
+
+
+@dataclass
+class GripProfile:
+    """How hard to grip (paper: soft, wood: rigid and heavier)."""
+    name: str = "paper"
+    torque_limit: float = 200.0      # 0.1 % units
+    squeeze_deg: float = 1.5
+    squeeze_mm: float = 1.5
+    closing_speed_deg_s: float = 6.0
+    size_uncertainty_mm: float = 0.0  # vision size error: widens the contact window
+
+
+def gap_mm(angle_deg: float, p: SoftGraspParams) -> float:
+    """Jaw gap at a gripper angle (inverse of gap_angle_deg): the MEASURED width at a contact."""
+    return p.gap_zero_mm + p.gap_per_deg_mm * angle_deg
+
+
+def approach_open_deg(width_mm: float, open_deg: float, side_mm: float, max_open_deg: float,
+                      gap_zero_mm: float = 13.0, gap_per_deg_mm: float = 1.35) -> float:
+    """Approach opening for an object `width_mm` wide: max(open_deg, angle of width + 2 x side_mm),
+    at most max_open_deg (extrapolated gap model above 30 deg, see above)."""
+    need = (width_mm + 2 * side_mm - gap_zero_mm) / gap_per_deg_mm
+    return float(min(max_open_deg, max(open_deg, need)))
+
+
+def params_for_width(base: SoftGraspParams, width_mm: float, profile: GripProfile | None = None) -> SoftGraspParams:
+    """SoftGraspParams for one grasp of an object `width_mm` wide between the jaws:
+    floor = angle(width - squeeze_mm) (HARD RULE, never lower), expected contact = angle(width),
+    contact window widened by the size uncertainty; the profile sets squeeze and closing speed."""
+    from dataclasses import replace
+    pr = profile or GripProfile(squeeze_deg=base.squeeze_deg, squeeze_mm=base.squeeze_mm,
+                                closing_speed_deg_s=base.closing_speed_deg_s)
+    return replace(base, edge_mm=float(width_mm), squeeze_deg=pr.squeeze_deg,
+                   squeeze_mm=min(max(0.0, pr.squeeze_mm), MAX_SQUEEZE_MM),
+                   closing_speed_deg_s=pr.closing_speed_deg_s,
+                   window_deg=base.window_deg + max(0.0, pr.size_uncertainty_mm) / base.gap_per_deg_mm)
+
+
 def in_window(contact_deg: float, expected: float, p: SoftGraspParams) -> bool:
     return abs(contact_deg - expected) <= p.window_deg
 
