@@ -19,4 +19,6 @@ cube_pick_place:
     # two overview poses: the usual LOOK pose (15-30 cm) and a far one (computed with
     # grasp.overview_pose(d=0.32, H=0.30, area x 26-42 cm, y +-20 cm, pan 0): covers 100 % of that,
     # where the LOOK pose sees 36 %; cubes beyond ~31 cm were cut by the image border (2026-11-27)
-    overview_poses_deg: [0.0, -74.3, 41.4, 90.0, -85.0, 0.2, -19.9, -13.5, 90.0, -84.9]
+    # DISABLED 2026-11-27: the wrist camera's USB dropped twice (22:10, 22:13) around moves to this
+    # far pose (arm stretched forward); check the wrist cable before using it again
+    # overview_poses_deg: [0.0, -74.3, 41.4, 90.0, -85.0, 0.2, -19.9, -13.5, 90.0, -84.9]

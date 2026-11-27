@@ -110,7 +110,7 @@ def test_real_frame_segmentation():
 # -- real LOOK frames (2026-11-27, real arm, joint states saved with each frame) -----------------
 REAL_DIR = os.path.join(HERE, "real_wood")
 # (frame, cubes a person counts fully or mostly in the work area, minimum the detector must accept)
-REAL_LOOK = [("look1", 10, 8), ("stack1", 10, 8)]
+REAL_LOOK = [("look1", 10, 8), ("stack1", 10, 8), ("look3", 13, 8)]
 
 
 def _real_pose(name):
