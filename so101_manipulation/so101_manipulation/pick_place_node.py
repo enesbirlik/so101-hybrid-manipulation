@@ -377,8 +377,16 @@ class PickPlaceNode(Node):
                             np.linalg.norm(np.asarray(est.centre, float)[:2] - m["centre"][:2]) > self.p.wood_hold_freeze_mm / 1000:
                         continue
                 if m is None or t_obs > m["t"] + 1e-3:
-                    self.memory[k] = {"centre": np.array(est.centre, float), "yaw": float(est.yaw), "t": t_obs,
-                                      "size": self.size_of(est)}
+                    c = np.array(est.centre, float)
+                    self.memory[k] = {"centre": c, "yaw": float(est.yaw), "t": t_obs, "size": self.size_of(est)}
+                    # two cubes cannot fill the same space: an older entry this close is the same cube
+                    # under an id the detector has since replaced (wood ids, 2026-11-27: every cube
+                    # listed twice after a two-pose overview). Stacked cubes differ by a cube in z.
+                    near = 0.6 * float(np.min(self.memory[k]["size"]))
+                    for j in [j for j, o in self.memory.items() if j != k and o["centre"] is not None
+                              and o["t"] < t_obs and np.linalg.norm(o["centre"] - c) < near
+                              and (self.holding is None or self.holding.get("cube") != j)]:
+                        del self.memory[j]
 
     def remember(self, cube, centre, yaw=0.0, size=None):
         with self.memory_lock:
