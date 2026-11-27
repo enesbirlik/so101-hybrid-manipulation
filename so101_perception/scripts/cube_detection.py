@@ -63,6 +63,8 @@ def load_cube_geometry(path):
     import yaml
     with open(path) as f:
         data = yaml.safe_load(f) or {}
+    if data.get("layout"):
+        configure(**data["layout"])
     default = CubeGeometry(**(data.get("default") or {}))
     out = {None: default}
     for k, g in (data.get("cubes") or {}).items():
@@ -79,10 +81,39 @@ def geometry_of(geometry, k):
     return geometry.get(k, geometry.get(None, CubeGeometry()))
 
 
+FIRST_ID = 0       # marker id of cube FIRST_CUBE's first face
+FIRST_CUBE = 0     # index of the first cube (the wooden cubes start at 10: the pick node grips ids >= 10 as wood)
+
+
+def configure(dictionary=None, faces_per_cube=None, n_cubes=None, first_id=None, first_cube=None):
+    """Marker layout (cubes.yaml `layout:`). Paper cubes: DICT_4X4_50, 6 ids per cube (6k .. 6k+5),
+    6 cubes, first id 0, first cube 0. Wooden cubes (tools/make_cube_stickers.py): DICT_4X4_100,
+    ONE id per cube on all six faces (faces_per_cube 1), 15 cubes from id 50, cubes 10 ...
+    Which face carries which id never matters to the fit, only which cube."""
+    global DICTIONARY, FACES_PER_CUBE, N_CUBES, FIRST_ID, FIRST_CUBE
+    if dictionary is not None:
+        DICTIONARY = getattr(cv2.aruco, dictionary) if isinstance(dictionary, str) else int(dictionary)
+    if faces_per_cube is not None:
+        FACES_PER_CUBE = int(faces_per_cube)
+    if n_cubes is not None:
+        N_CUBES = int(n_cubes)
+    if first_id is not None:
+        FIRST_ID = int(first_id)
+    if first_cube is not None:
+        FIRST_CUBE = int(first_cube)
+
+
+def cube_ids():
+    """Indices of every cube of the layout."""
+    return list(range(FIRST_CUBE, FIRST_CUBE + N_CUBES))
+
+
 def cube_of(marker_id):
     """Cube index of a marker id, or None for ids that belong to no cube."""
-    k = marker_id // FACES_PER_CUBE
-    return k if 0 <= k < N_CUBES else None
+    if marker_id < FIRST_ID:
+        return None
+    k = (marker_id - FIRST_ID) // FACES_PER_CUBE
+    return FIRST_CUBE + k if 0 <= k < N_CUBES else None
 
 
 class MarkerDetector:
@@ -551,9 +582,12 @@ def _fit_cube(k, items, R_wc, t_wc, zc, prm):
 
     # what every face implies alone, and which one is the top face
     face_centres, face_yaws, face_w, top, top_q = {}, {}, {}, -1, 0.0
-    for fc in faces:
+    ids_all = [fc.pose.marker_id for fc in faces]
+    unique = len(set(ids_all)) == len(ids_all)
+    for j, fc in enumerate(faces):
         s = fit.solve(p, [fc], z, iterations=6)[0] if len(faces) > 1 else p
-        mid = fc.pose.marker_id
+        # key per face: the marker id, or (one id on every face of a cube, the wooden cubes) id * 10 + j
+        mid = fc.pose.marker_id if unique else fc.pose.marker_id * 10 + j
         face_centres[mid] = np.array([s[0], s[1], s[3] if z is None else z])
         face_yaws[mid] = float(fold_yaw(s[2]))
         face_w[mid] = fc.weight

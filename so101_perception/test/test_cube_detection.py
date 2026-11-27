@@ -181,3 +181,27 @@ def test_circular_mean_90():
     assert abs(abs(np.degrees(m)) - 45) < 1e-6 and r > 0.99
     m, _ = cd.circular_mean_90(np.radians([10, 100, -80]))
     assert abs(np.degrees(m) - 10) < 1e-6
+
+
+def test_wood_tags_one_id_on_every_face():
+    """Wooden cubes with stickers (config/cubes_wood_tags.yaml): the same id on all six faces,
+    DICT_4X4_100 ids 50+, cube index 10 + (id - 50). Two faces of one id seen at once must fuse."""
+    saved = (cd.DICTIONARY, cd.FACES_PER_CUBE, cd.N_CUBES, cd.FIRST_ID, cd.FIRST_CUBE)
+    try:
+        g = cd.load_cube_geometry(os.path.join(HERE, "..", "config", "cubes_wood_tags.yaml"))
+        assert cd.cube_of(50) == 10 and cd.cube_of(64) == 24 and cd.cube_of(65) is None and cd.cube_of(5) is None
+        K, D = camera()
+        rng = np.random.default_rng(11)
+        for k, xy, yaw in [(10, (0.24, 0.03), 0.4), (17, (0.20, -0.06), -0.2)]:
+            cube = sim.ideal_cube(k, [xy[0], xy[1], 0.031 / 2], yaw, edge=0.031, marker=0.020,
+                                  ids=[50 + k - 10] * 6)
+            R_wc, t_wc = sim.look_at(cube.centre + np.array([-0.12, -0.07, 0.14]), cube.centre)   # oblique: 2-3 faces
+            det = cd.MarkerDetector().detect(sim.render([cube], R_wc, t_wc, K, D, rng=rng))
+            assert len(det) >= 2 and len({i for i, _ in det}) == 1, det    # >= 2 faces, one id
+            e = cd.estimate_cubes(det, K, D, R_wc, t_wc, geometry=g, table_z=0.0)
+            assert [x.cube for x in e] == [k]
+            assert np.linalg.norm(e[0].centre - cube.centre) < 0.002, (e[0].centre, cube.centre)
+            assert abs(cd.fold_yaw(e[0].yaw - yaw)) < np.radians(3)
+            assert len(e[0].face_centres) == len(e[0].faces)                  # no face overwritten
+    finally:
+        cd.configure(*saved)

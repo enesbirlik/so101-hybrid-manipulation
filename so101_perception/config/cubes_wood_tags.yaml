@@ -1,0 +1,9 @@
+# Wooden cubes with ArUco stickers (tools/make_cube_stickers.py): cube_detector_node.py with
+# `cubes:=tags` in wrist_camera.launch.py / demo.launch.py.
+# ONE id per cube, the same sticker on all six faces: sticker id 50 + k -> cube_(10 + k), k = 0..14.
+# Cube indices start at 10 so the pick node grips them with its wood profile (ids >= 10).
+# Edge: nominal for the 15 cubes (the marker-less detector saw 29.7-33 mm); nobody measures them:
+# the jaws read each cube's width at the contact. Marker: the printed black square, 20 mm.
+layout: {dictionary: DICT_4X4_100, faces_per_cube: 1, n_cubes: 15, first_id: 50, first_cube: 10}
+default: {edge: 0.031, marker: 0.020}
+cubes: {}

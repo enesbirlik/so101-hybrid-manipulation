@@ -1,5 +1,5 @@
 """Wrist camera image + the hand-eye transform gripper_link -> wrist_camera_optical_frame
-(+ a cube detector: cubes:=true / aruco for the ArUco cubes, cubes:=wood for plain wooden cubes)."""
+(+ a cube detector: cubes:=true / aruco for the ArUco cubes, cubes:=tags for stickered wooden cubes, cubes:=wood for plain ones)."""
 
 import os
 
@@ -24,7 +24,8 @@ def generate_launch_description():
         DeclareLaunchArgument("fps", default_value="15.0",
                               description="publish rate; the camera delivers 30 fps in good light, ~25 in dim light"),
         DeclareLaunchArgument("cubes", default_value="false",
-                              description="cube detector: false, true/aruco (ArUco cubes) or wood (plain wooden cubes, marker-less); "
+                              description="cube detector: false, true/aruco (paper ArUco cubes), tags (wooden cubes with ArUco stickers, "
+                                          "config/cubes_wood_tags.yaml) or wood (plain wooden cubes, marker-less); "
                                           "both publish cubes/detections, cubes/tracked, wrist_camera/cubes/compressed"),
         Node(
             package="so101_perception",
@@ -40,6 +41,12 @@ def generate_launch_description():
             executable="cube_detector_node.py",
             condition=IfCondition(PythonExpression(
                 ["'", LaunchConfiguration("cubes"), "'.lower() in ('true', '1', 'aruco')"])),
+        ),
+        Node(
+            package="so101_perception",
+            executable="cube_detector_node.py",
+            condition=IfCondition(EqualsSubstitution(LaunchConfiguration("cubes"), "tags")),
+            parameters=[{"cubes_file": os.path.join(config, "cubes_wood_tags.yaml")}],
         ),
         Node(
             package="so101_perception",

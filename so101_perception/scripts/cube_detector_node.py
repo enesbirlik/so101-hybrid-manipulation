@@ -283,7 +283,7 @@ class CubeDetector(Node):
         gone = set(self.tracker.forget(self.memory_s, now))
         arr = MarkerArray()
         tfs = []
-        for k in range(cd.N_CUBES):
+        for k in cd.cube_ids():
             tr = self.tracker.tracks.get(k)
             if tr is None or tr.centre is None:
                 if k in gone or tr is None:
@@ -298,7 +298,7 @@ class CubeDetector(Node):
             m.header.frame_id, m.header.stamp = self.target_frame, stamp
             self.fill_pose(m.pose, tr.centre, tr.yaw)
             m.scale.x = m.scale.y = m.scale.z = edge
-            r, g, b = CUBE_COLOURS[k]
+            r, g, b = CUBE_COLOURS[k % len(CUBE_COLOURS)]
             m.color.r, m.color.g, m.color.b, m.color.a = r, g, b, 0.9 if fresh else 0.35
             arr.markers.append(m)
             label = Marker(ns="cube_labels", id=k, type=Marker.TEXT_VIEW_FACING, action=Marker.ADD)
@@ -326,7 +326,7 @@ class CubeDetector(Node):
         used = {i for e in cubes for i in e.faces}
         for marker_id, px in detections:
             k = cd.cube_of(marker_id)
-            colour = (80, 80, 80) if k is None else tuple(int(255 * v) for v in CUBE_COLOURS[k][::-1])
+            colour = (80, 80, 80) if k is None else tuple(int(255 * v) for v in CUBE_COLOURS[k % len(CUBE_COLOURS)][::-1])
             if marker_id in good and cubes and marker_id not in used:
                 colour = (0, 165, 255)     # seen, but dropped as an outlier
             cv2.polylines(img, [px.astype(np.int32)], True, colour if marker_id in good else (0, 0, 255), 2)
@@ -345,7 +345,7 @@ class CubeDetector(Node):
                     continue
                 px, _ = cv2.fisheye.projectPoints(corners_c.reshape(-1, 1, 3), np.zeros(3), np.zeros(3), self.K, self.D)
                 px = px.reshape(-1, 2).astype(np.int32)
-                colour = tuple(int(255 * v) for v in CUBE_COLOURS[e.cube][::-1])
+                colour = tuple(int(255 * v) for v in CUBE_COLOURS[e.cube % len(CUBE_COLOURS)][::-1])
                 for i, j in CUBE_EDGES:
                     cv2.line(img, tuple(px[i]), tuple(px[j]), colour, 2, cv2.LINE_AA)
                 top = px[np.argmin(px[:, 1])]
