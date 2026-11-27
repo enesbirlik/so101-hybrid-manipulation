@@ -41,6 +41,8 @@ class WoodParams:
     s_max: int = 172         # desk ~195, orange jaws ~230
     v_min: int = 45
     dark_v: int = 125         # below this brightness a pixel must be more saturated to count as wood:
+    bright_v: int = 150       # pixels at least this bright need only bright_s_min
+    bright_s_min: int = 15
     dark_s_min: int = 90      # dark pixels (V < dark_v) need this S: table shadows S 47..66 (some 80..97), wood in the arm's shadow S 100..114, dark wood sides 140..150
     open_px: float = 0.004   # morphology kernel as a fraction of the image width
     min_area: float = 2.5e-4  # blob area as a fraction of the image area
@@ -60,6 +62,10 @@ class WoodParams:
     orange_grow: float = 0.02          # of the image width
     min_footprint: float = 0.016       # m: blobs whose mid-height footprint is smaller on both sides are not fitted
     max_aspect: float = 1.5            # longer / shorter horizontal edge above this = merged cubes, rejected
+    border_px: float = 2.0             # contour points this close to the image border are not silhouette edges
+    collapse_frac: float = 0.6         # fitted height below this x the shorter footprint edge: refit as a near-cube
+    collapse_prior: float = 2.0        # cube prior weight of that refit
+    collapse_rms_px: float = 0.8       # the near-cube refit is taken when its contour RMS is at most this much worse
     cache_iou: float = 0.97            # detect_boxes(cache=...): reuse the previous fit of a blob this alike
     workers: int = 4                   # processes fitting blobs in parallel (<= 1: in this process); 10 kept the load at 17-20 on 12 cores (2026-11-27) next to ros2_control
     start_nfev: int = 25                # max evaluations of each yaw start before the best is refined
@@ -125,8 +131,12 @@ def work_area_mask(rays_cam, R_wc, t_wc, table_z, prm):
 # -- segmentation ---------------------------------------------------------------------------
 def wood_mask(bgr, prm=WoodParams(), roi=None):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    m = cv2.inRange(hsv, (prm.h_min, prm.s_min, prm.v_min), (prm.h_max, prm.s_max, 255))
-    m[(hsv[..., 2] < prm.dark_v) & (hsv[..., 1] < prm.dark_s_min)] = 0
+    # S threshold by brightness: pale, lit wood sides are bright (V ~180) but nearly grey (S 25-35),
+    # table shadows are darker (V 95-140) with S 45-66; the white table itself is S < 10
+    m = cv2.inRange(hsv, (prm.h_min, min(prm.s_min, prm.bright_s_min), prm.v_min), (prm.h_max, prm.s_max, 255))
+    V, Sat = hsv[..., 2], hsv[..., 1]
+    m[(V < prm.bright_v) & (Sat < prm.s_min)] = 0
+    m[(V < prm.dark_v) & (Sat < prm.dark_s_min)] = 0
     if prm.orange_s_min > 0:
         # the orange jaws: their blurred edges fall into the wood range (real arm 2026-11-27, LOOK pose)
         orange = cv2.inRange(hsv, (0, prm.orange_s_min, 60), (prm.h_max, 255, 255))
@@ -224,7 +234,10 @@ def _dist_to_polygon(Q, P):
     return np.linalg.norm(Q[:, None, :] - closest, axis=2).min(axis=1)
 
 
-def _residuals(p, z0, contour, cam, prm, edge_dt=None):
+def _residuals(p, z0, contour, cam, prm, edge_dt=None, border=None, cube_prior=None):
+    """border: (contour points on the image border (bool), width, height) or None. A cube cut by the
+    image border: its outline along the border is not a silhouette edge, and the silhouette may run
+    on outside the image: neither counts."""
     R_wc, t_wc, K, D = cam
     P = silhouette(p, z0, R_wc, t_wc, K, D)
     n_top = prm.top_pts if edge_dt is not None else 0
@@ -233,8 +246,14 @@ def _residuals(p, z0, contour, cam, prm, edge_dt=None):
     r1 = _dist_to_polygon(contour, P)
     S = _sample_polygon(P, prm.hull_pts)
     r2 = np.sqrt(((S[:, None, :] - contour[None]) ** 2).sum(2)).min(axis=1)
+    if border is not None:
+        on_border, W, H = border
+        r1 = np.where(on_border, 0.0, r1)
+        m = prm.border_px
+        r2 = np.where((S[:, 0] < m) | (S[:, 1] < m) | (S[:, 0] > W - 1 - m) | (S[:, 1] > H - 1 - m), 0.0, r2)
     a, b, h = p[3:] * 1000
-    prior = prm.cube_prior * np.array([a - b, h - (a + b) / 2])
+    cp = prm.cube_prior if cube_prior is None else cube_prior
+    prior = cp * np.array([a - b, h - (a + b) / 2])
     if edge_dt is None:
         return np.r_[r1, r2, prior]
     T = _sample_polygon(project(_place(_UNIT_TOP, p, z0), R_wc, t_wc, K, D), n_top)
@@ -297,13 +316,17 @@ def fit_box(mask, R_wc, t_wc, K, D, table_z, prm=WoodParams(), gray=None):
     contour = _contour(mask, prm.contour_pts, prm.outline_px)
     edge_dt = edge_distance(gray, mask, prm) if gray is not None and prm.top_weight > 0 else None
     cam = (R_wc, t_wc, K, D)
+    H_img, W_img = mask.shape[:2]
+    m = prm.border_px
+    on_border = (contour[:, 0] < m) | (contour[:, 1] < m) | (contour[:, 0] > W_img - 1 - m) | (contour[:, 1] > H_img - 1 - m)
+    border = (on_border, W_img, H_img) if on_border.any() else None
     p0 = initial_box(contour, cam, table_z, prm)
     if p0 is None:
         return None
     lo, hi = prm.size_range
     lb = [-np.inf, -np.inf, -np.inf, lo, lo, lo]
     ub = [np.inf, np.inf, np.inf, hi, hi, hi]
-    kw = dict(args=(table_z, contour, cam, prm, edge_dt), bounds=(lb, ub), loss="soft_l1", f_scale=2.0,
+    kw = dict(args=(table_z, contour, cam, prm, edge_dt, border), bounds=(lb, ub), loss="soft_l1", f_scale=2.0,
               x_scale=[0.005, 0.005, 0.1, 0.005, 0.005, 0.005])
     best = None
     # short fits from every yaw start, then only the best one runs to convergence (~3x faster)
@@ -323,8 +346,21 @@ def fit_box(mask, R_wc, t_wc, K, D, table_z, prm=WoodParams(), gray=None):
             best = least_squares(_residuals, best.x, max_nfev=200, **kw)
         except ValueError:
             return None
-    p = best.x
     n = len(contour) + prm.hull_pts   # silhouette residuals only
+    a_, b_, h_ = best.x[3:]
+    if h_ < prm.collapse_frac * min(a_, b_) or h_ < lo * 1.05:
+        # height collapsed (seen from nearly straight above, a flat box fits the outline as well as a
+        # cube; real arm 2026-11-27: 30 mm cubes came out 12 mm tall): fit again as a near-cube
+        q = best.x.copy()
+        q[5] = float(np.clip((a_ + b_) / 2, lo * 1.05, hi * 0.95))
+        kw2 = dict(kw, args=(table_z, contour, cam, prm, edge_dt, border, prm.collapse_prior))
+        try:
+            r = least_squares(_residuals, q, max_nfev=200, **kw2)
+            if np.sqrt(np.mean(r.fun[:n] ** 2)) < np.sqrt(np.mean(best.fun[:n] ** 2)) + prm.collapse_rms_px:
+                best = r
+        except ValueError:
+            pass
+    p = best.x
     rms = float(np.sqrt(np.mean(best.fun[:n] ** 2)))
     P = silhouette(p, table_z, *cam)
     iou, _ = _iou(mask, P)
@@ -386,9 +422,42 @@ def detect_boxes(bgr, R_wc, t_wc, K, D, table_z, prm=WoodParams(), rays_cam=None
         fitted = [_fit_safe(a) for a in args]
     for i, box in zip(todo, fitted):
         boxes[i] = box
+    # touching cubes that the watershed left as one blob fit as one long box: split it into
+    # round(long / short) parts along its pixels (k-means) and fit each (real arm 2026-11-27)
+    split_args, split_of = [], []
+    for i, box in enumerate(boxes):
+        if box is None or isinstance(box, list):
+            continue
+        a, b = sorted(box.size[:2])
+        if b / max(a, 1e-6) > prm.max_aspect:
+            for k in (2, 3):
+                for part in _split_k(blobs[i], k):
+                    split_args.append((part, R_wc, t_wc, K, D, table_z, prm, gray))
+                    split_of.append((i, k))
+    if split_args:
+        ex = ex or _executor(prm.workers)
+        try:
+            parts = list(ex.map(_fit_safe, split_args)) if ex is not None else [_fit_safe(a) for a in split_args]
+        except Exception:
+            parts = [_fit_safe(a) for a in split_args]
+        for i in sorted({j for j, _ in split_of}):
+            best = None
+            for k in (2, 3):
+                mine = [p for p, jk in zip(parts, split_of) if jk == (i, k)]
+                good = [p for p in mine if p is not None and accepted(p, prm)]
+                # all parts good beats some; then more good parts; then the smaller k
+                key = (len(good) == len(mine), len(good), -k)
+                if good and (best is None or key > best[0]):
+                    best = (key, good)
+            if best is not None:
+                boxes[i] = best[1]     # this blob -> several boxes
     if cache is not None:
         cache["pose"] = (R_wc.copy(), np.asarray(t_wc, float).copy())
         cache["blobs"] = [(b, box) for b, box in zip(blobs, boxes)]
+    flat = []
+    for box in boxes:
+        flat.extend(box if isinstance(box, list) else [box])
+    boxes = flat
     for box in boxes:
         if box is None:
             continue
@@ -403,6 +472,22 @@ def _cached(entries, blob, min_iou):
         if union and inter / union >= min_iou:
             return box
     return None
+
+
+def _split_k(blob, k):
+    """Blob mask -> k masks: k-means of its pixel coordinates (touching cubes of about equal size)."""
+    ys, xs = np.nonzero(blob)
+    pts = np.c_[xs, ys].astype(np.float32)
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.5)
+    _, lab, _ = cv2.kmeans(pts, k, None, crit, 3, cv2.KMEANS_PP_CENTERS)
+    out = []
+    for j in range(k):
+        m = np.zeros_like(blob)
+        sel = lab.ravel() == j
+        m[ys[sel], xs[sel]] = 255
+        m = cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        out.append(m)
+    return out
 
 
 def _fit_safe(args):

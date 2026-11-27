@@ -105,3 +105,46 @@ def test_real_frame_segmentation():
             cnts, _ = cv2.findContours(b, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
             cv2.drawContours(out, cnts, -1, [(0, 255, 0), (255, 0, 255), (255, 255, 0)][i % 3], 2)
         cv2.imwrite(OVERLAY_OUT, out)
+
+
+# -- real LOOK frames (2026-11-27, real arm, joint states saved with each frame) -----------------
+REAL_DIR = os.path.join(HERE, "real_wood")
+# (frame, cubes a person counts fully or mostly in the work area, minimum the detector must accept)
+REAL_LOOK = [("look1", 10, 8), ("stack1", 10, 8)]
+
+
+def _real_pose(name):
+    import json
+    sys.path.insert(0, os.path.join(HERE, "..", "..", "so101_manipulation"))
+    try:
+        from so101_manipulation.grasp import camera_pose, load_hand_eye
+        from so101_manipulation.kinematics import ArmModel, perception_config_dir
+    except ImportError:
+        pytest.skip("so101_manipulation (kinematics) not importable")
+    js = json.load(open(os.path.join(REAL_DIR, name + ".json")))
+    m = ArmModel()
+    T_gc = load_hand_eye(perception_config_dir() / "wrist_camera_hand_eye.yaml")
+    q = np.array([js[j] for j in ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]])
+    T = camera_pose(m, T_gc, q)
+    return T[:3, :3], T[:3, 3], m.table_z
+
+
+@pytest.mark.parametrize("name,n_cubes,n_min", REAL_LOOK)
+def test_real_look_frames(name, n_cubes, n_min):
+    import yaml
+    path = os.path.join(REAL_DIR, name + ".jpg")
+    if not os.path.exists(path):
+        pytest.skip("no real frame")
+    img = cv2.imread(path)
+    R_wc, t_wc, table_z = _real_pose(name)
+    with open(os.path.join(HERE, "..", "config", "wrist_camera_fisheye.yaml")) as f:
+        c = yaml.safe_load(f)
+    import cube_detection as cd
+    K = cd.scaled_camera(np.array(c["camera_matrix"]["data"]).reshape(3, 3), img.shape[1], c["image_width"])
+    D = np.array(c["distortion_coefficients"]["data"]).reshape(4, 1)
+    rays = wd.pixel_rays(K, D, img.shape[1], img.shape[0])
+    good, _, _ = wd.detect_boxes(img, R_wc, t_wc, K, D, table_z, rays_cam=rays)
+    assert len(good) >= n_min, f"{len(good)} of ~{n_cubes} cubes accepted"
+    # every accepted footprint is a plausible single cube (the user's cubes are ~30 mm)
+    for b in good:
+        assert 0.022 < min(b.size[:2]) and max(b.size[:2]) < 0.045, b.size
