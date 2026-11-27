@@ -37,7 +37,7 @@ class WoodParams:
     # HSV thresholds, OpenCV ranges (H 0..180)
     h_min: int = 4
     h_max: int = 26
-    s_min: int = 80          # table ~30, shadow ~60, wood 105..150
+    s_min: int = 30          # wood S 105..150 in normal light but only 35..55 overexposed (2026-11-27 frame 2); the table is rejected by hue (H ~110-146), not by S
     s_max: int = 172         # desk ~195, orange jaws ~230
     v_min: int = 45
     dark_v: int = 125         # below this brightness a pixel must be more saturated to count as wood:
