@@ -56,6 +56,7 @@ class WoodParams:
     top_pts: int = 60         # samples on the top face outline, matched to image edges
     top_weight: float = 2.0
     canny: tuple = (25, 70)
+    start_nfev: int = 25                # max evaluations of each yaw start before the best is refined
     yaw_starts: int = 4
     outline_px: float = 1.2   # the blob outline is moved out by this: 0.5 px (pixel centres) + ~0.7 px the
     #                           thresholds lose on the blurred edge (synthetic test; check on real frames)
@@ -288,19 +289,26 @@ def fit_box(mask, R_wc, t_wc, K, D, table_z, prm=WoodParams(), gray=None):
     lo, hi = prm.size_range
     lb = [-np.inf, -np.inf, -np.inf, lo, lo, lo]
     ub = [np.inf, np.inf, np.inf, hi, hi, hi]
+    kw = dict(args=(table_z, contour, cam, prm, edge_dt), bounds=(lb, ub), loss="soft_l1", f_scale=2.0,
+              x_scale=[0.005, 0.005, 0.1, 0.005, 0.005, 0.005])
     best = None
+    # short fits from every yaw start, then only the best one runs to convergence (~3x faster)
     for dyaw in np.arange(prm.yaw_starts) * (np.pi / 2 / prm.yaw_starts):
         p = p0.copy()
         p[2] += dyaw
         try:
-            r = least_squares(_residuals, p, args=(table_z, contour, cam, prm, edge_dt), bounds=(lb, ub), loss="soft_l1",
-                              f_scale=2.0, x_scale=[0.005, 0.005, 0.1, 0.005, 0.005, 0.005], max_nfev=200)
+            r = least_squares(_residuals, p, max_nfev=prm.start_nfev, **kw)
         except ValueError:
             continue
         if best is None or r.cost < best.cost:
             best = r
     if best is None:
         return None
+    if not best.success or best.nfev >= prm.start_nfev:
+        try:
+            best = least_squares(_residuals, best.x, max_nfev=200, **kw)
+        except ValueError:
+            return None
     p = best.x
     n = len(contour) + prm.hull_pts   # silhouette residuals only
     rms = float(np.sqrt(np.mean(best.fun[:n] ** 2)))
